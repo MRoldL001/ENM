@@ -9,9 +9,18 @@ from . import __version__
 from .doctor import checks_as_dict, run_doctor
 from .github import ReleaseClient, ReleaseError, normalize_arch, normalize_platform, normalize_tag
 from .package import deploy, package_stage
-from .project import build, configure, create_project, find_project, generate_ci, load_manifest, test
+from .project import (
+    build,
+    configure,
+    create_project,
+    find_project,
+    generate_ci,
+    load_manifest,
+    supports_external_apps,
+    test,
+)
 from .state import StateStore
-from .ui import Spinner
+from .ui import Spinner, level_label, yes_no
 
 
 def _store(args: argparse.Namespace) -> StateStore:
@@ -73,8 +82,8 @@ def cmd_sdk_list(args: argparse.Namespace) -> int:
         for row in rows:
             print(
                 f"{row['version']:<18} {row['published_at'][:10]:<12} "
-                f"{('yes' if row['sdk_available'] else 'no'):<8} "
-                f"{('yes' if row['installed'] else 'no'):<9} "
+                f"{yes_no(row['sdk_available']):<17} "
+                f"{yes_no(row['installed']):<18} "
                 f"{'*' if row['active'] else ''}"
             )
     return 0
@@ -156,6 +165,16 @@ def cmd_init(args: argparse.Namespace) -> int:
         raise ReleaseError("--install-spec is only valid together with --ci github")
     store = _store(args)
     version = _release_version(args, store)
+    try:
+        selected_sdk = store.get_installed(version, normalize_platform(), normalize_arch())
+    except ReleaseError:
+        selected_sdk = None
+    if selected_sdk and not supports_external_apps(selected_sdk):
+        raise ReleaseError(
+            f"EUI-NEO SDK {version} cannot create an external application because it exports "
+            "neither eui_neo_configure_app() nor eui::neo. Install a compatible SDK, activate it with "
+            "'enm sdk use VERSION', or pass 'enm init --version VERSION'."
+        )
     destination = Path(args.path or args.name)
     result = create_project(destination, args.name, version, force=args.force)
     print(f"created {result}")
@@ -299,7 +318,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return int(args.func(args))
     except ReleaseError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(f"{level_label('error', sys.stderr)}: {exc}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
         print("cancelled", file=sys.stderr)

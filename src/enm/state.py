@@ -54,10 +54,12 @@ class StateStore:
         self.root = (root or default_home()).resolve()
         self.state_file = self.root / "state.json"
         self.sdks_dir = self.root / "sdks"
+        self.sources_dir = self.root / "sources"
         self.tmp_dir = self.root / "tmp"
 
     def ensure(self) -> None:
         self.sdks_dir.mkdir(parents=True, exist_ok=True)
+        self.sources_dir.mkdir(parents=True, exist_ok=True)
         self.tmp_dir.mkdir(parents=True, exist_ok=True)
 
     def load(self) -> dict[str, Any]:

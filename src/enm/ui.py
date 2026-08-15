@@ -9,6 +9,30 @@ from typing import TextIO
 
 UTF8_CLOVER_FRAMES = (".", "·", "+", "✣", "✤", "✣", "+", "·")
 LEGACY_CLOVER_FRAMES = (".", "·", "+", "¤", "◆", "¤", "+", "·")
+BLUE = "\x1b[34m"
+BRIGHT_BLUE = "\x1b[94m"
+GREEN = "\x1b[32m"
+YELLOW = "\x1b[33m"
+RED = "\x1b[31m"
+RESET = "\x1b[0m"
+
+
+def color(text: str, code: str, stream: TextIO | None = None) -> str:
+    stream = stream or sys.stdout
+    if not getattr(stream, "isatty", lambda: False)() or os.environ.get("NO_COLOR") is not None:
+        return text
+    return f"{code}{text}{RESET}"
+
+
+def yes_no(value: bool, stream: TextIO | None = None) -> str:
+    return color("yes", GREEN, stream) if value else color("no", RED, stream)
+
+
+def level_label(level: str, stream: TextIO | None = None) -> str:
+    code = {"e": RED, "error": RED, "w": YELLOW, "warning": YELLOW, "info": GREEN}.get(
+        level.lower()
+    )
+    return color(level, code, stream) if code else level
 
 
 def clover_frames(encoding: str | None) -> tuple[str, ...]:
@@ -42,7 +66,8 @@ class Spinner:
     def _animate(self) -> None:
         index = 0
         while not self._stop.is_set():
-            self.stream.write(f"\r{self.frames[index]} {self.message}")
+            frame = color(self.frames[index], BRIGHT_BLUE, self.stream)
+            self.stream.write(f"\r{frame} {self.message}")
             self.stream.flush()
             index = (index + 1) % len(self.frames)
             self._stop.wait(self.interval)

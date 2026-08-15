@@ -209,6 +209,25 @@ my-app/build/default/Release/My_App.exe
 
 生成的项目会记住创建时选择的 EUI-NEO 版本。以后即使你切换了全局 SDK，这个项目仍会继续使用原来的版本，除非手动修改 `enm-project.json`。
 
+ENM 会按 SDK 的实际内容选择接入方式。提供 `eui_neo_configure_app()` 的新版 SDK 直接使用上游统一入口；只导出 `eui::neo` 的旧版 SDK 会自动下载并缓存同标签的上游源码，用其中匹配的 GLFW/SDL2 入口补齐构建。首次配置旧 SDK 需要联网，之后可以使用缓存离线构建；判断依据不是写死的版本号。
+
+`enm-project.json` 是项目名称、项目版本、构建目标和 EUI-NEO 版本的唯一配置源。`enm configure` 会在构建目录生成临时的 `enm-config.cmake` 供 CMake 使用，不需要在 `CMakeLists.txt` 中重复维护这些值。
+
+项目使用 EUI-NEO 官方外部应用接口，并将源码单独放在 `src/`：
+
+```text
+my-app/
+├─ src/
+│  └─ app.cpp
+├─ tests/
+│  └─ app_config_test.cpp
+├─ CMakeLists.txt
+├─ enm-project.json
+└─ .gitignore
+```
+
+默认测试通过应用实际导出的 `dslAppConfig()` 检查标题、页面 ID 和窗口尺寸。项目变大后，可以按上游应用的组织方式自行加入 `assets/`、`components/` 和 `pages/`。
+
 ### 后续操作
 
 ```powershell
@@ -217,7 +236,7 @@ enm deploy
 enm package --format zip
 ```
 
-- `test`：运行项目中已登记的测试；默认模板目前只有基础检查
+- `test`：单独构建测试程序，再通过 CTest 运行登记的测试；普通 `build` 不构建测试
 - `deploy`：把程序、资源和需要随程序提供的文件整理到 `dist/`
 - `package`：把整理后的目录压缩，并附带 `.sha256` 校验文件
 
@@ -276,7 +295,7 @@ enm init "My App" --path my-app --ci github `
 | `enm init NAME`             | 创建新应用                | `--path`、`--version`、`--ci github` |
 | `enm configure`             | 为当前项目准备构建环境          | `-- CMAKE_ARGS...`                 |
 | `enm build`                 | 构建当前项目               | `-- BUILD_ARGS...`                 |
-| `enm test`                  | 运行当前项目登记的测试          | `-- CTEST_ARGS...`                 |
+| `enm test`                  | 运行项目登记的 CTest 测试     | `-- CTEST_ARGS...`                 |
 | `enm deploy`                | 把运行文件整理到 `dist/`     | `--binary`、`--force`               |
 | `enm package`               | 打包运行目录并生成校验文件        | `--format zip` 或 `--format tar.gz` |
 | `enm ci init github`        | 创建 GitHub Actions    | `--install-spec SPEC`              |
@@ -294,9 +313,9 @@ enm sdk install --help
 - 版本列表、下载地址和文件摘要来自 EUI-NEO GitHub Releases API，没有内置版本表。
 - SDK 按版本和平台分别保存在 ENM 状态目录中；可用 `ENM_HOME` 或全局参数 `--home` 更改位置。
 - 项目通过 `enm-project.json` 固定 EUI-NEO 版本，构建时使用该版本，而不是直接跟随当前激活版本。
-- 生成项目调用上游公开的 `find_package(EuiNeo)`、`eui::neo` 和 `eui_neo_configure_app()`。
+- 生成项目优先调用上游公开的 `find_package(EuiNeo)`、`eui::neo` 和 `eui_neo_configure_app()`；旧 SDK 则使用同版本上游源码中的兼容入口。
 - Windows ABI 检查会比较 SDK 与本机 MSVC 运行库实际包含的 `__std_*` 符号，不使用写死的 Visual Studio 最低版本；它是提前发现问题的辅助检查，不能证明所有二进制组合都兼容。
-- `enm configure`、`build` 和 `test` 最终仍调用 CMake 与 CTest，额外参数可放在 `--` 后传递。
+- `enm configure` 和 `build` 最终调用 CMake；`enm test` 仅在项目自行登记测试后调用 CTest。额外参数可放在 `--` 后传递。
 
 从源码参与开发时可使用：
 

@@ -108,7 +108,8 @@ function Invoke-WithClover {
     $index = 0
     try {
         while ($job.State -in @("NotStarted", "Running")) {
-            Write-Host ("`r{0} {1}" -f $frames[$index], $Message) -NoNewline
+            Write-Host ("`r{0}" -f $frames[$index]) -NoNewline -ForegroundColor Blue
+            Write-Host (" {0}" -f $Message) -NoNewline
             $index = ($index + 1) % $frames.Count
             Start-Sleep -Milliseconds 110
             $job = Get-Job -Id $job.Id
