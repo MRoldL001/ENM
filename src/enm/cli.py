@@ -20,7 +20,7 @@ from .project import (
     test,
 )
 from .state import StateStore
-from .ui import Spinner, level_label, yes_no
+from .ui import GREEN, RED, YELLOW, Spinner, color, level_label, yes_no
 
 
 def _store(args: argparse.Namespace) -> StateStore:
@@ -45,7 +45,15 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         symbols = {"ok": "OK", "optional": "--", "missing": "!!", "unsupported": "!!", "error": "!!"}
         for check in checks:
             location = f" [{check.path}]" if check.path else ""
-            print(f"{symbols.get(check.status, '??'):>2} {check.name:<12} {check.detail}{location}")
+            symbol = symbols.get(check.status, "??")
+            symbol_color = (
+                GREEN if check.status == "ok"
+                else RED if check.status in {"missing", "unsupported", "error"}
+                else YELLOW if symbol == "??"
+                else None
+            )
+            rendered = color(f"{symbol:>2}", symbol_color) if symbol_color else f"{symbol:>2}"
+            print(f"{rendered} {check.name:<12} {check.detail}{location}")
     return 1 if any(check.status in {"error", "unsupported"} for check in checks) else 0
 
 

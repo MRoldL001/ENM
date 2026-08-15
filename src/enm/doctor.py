@@ -85,6 +85,16 @@ def run_doctor(store: StateStore) -> list[Check]:
             "available through Visual Studio developer environment",
             str(visual_studio.dumpbin.with_name("cl.exe")),
         )
+    if visual_studio and visual_studio.complete:
+        for index in (1, 2):
+            alternative = compiler_checks[index]
+            if alternative.status != "ok":
+                compiler_checks[index] = Check(
+                    alternative.name,
+                    "optional",
+                    f"{alternative.detail}; not used by ENM's Visual Studio generator",
+                    alternative.path,
+                )
     available = [check for check in compiler_checks if check.status == "ok"]
     if visual_studio:
         available.append(Check("msvc", "ok", visual_studio.toolset_version))
