@@ -54,18 +54,50 @@ Vulkan SDK 不是默认必需项。普通项目默认使用 OpenGL；只有你�
 
 ### 安装 ENM
 
-在 Windows 上双击 `install.cmd`，或者打开 PowerShell：
+ENM 不提供独立 EXE。你可以下载完整源码，也可以只保留两个安装器文件。
+
+#### 方式一：下载完整源码
+
+适合需要离线保存源码、查看实现或之后重新安装的用户。
+
+1. 打开 [ENM Releases](https://github.com/MRoldL001/ENM/releases)，选择需要的版本。
+2. 展开 `Assets`，下载 GitHub 自动生成的 `Source code (zip)`。
+3. 完整解压 ZIP。
+4. 进入解压后的目录，双击 `install.cmd`。
+5. 选择 `Install ENM from this folder`。
+
+安装器会确认当前目录包含 `pyproject.toml` 和 `src/enm` 等必要文件，然后从本地源码安装。安装完成后，下载和解压的源码都不会被删除。
+
+#### 方式二：只下载安装器
+
+适合只想安装和使用 ENM、不想长期保存完整源码的用户。
+
+1. 下载 [`install.cmd`](https://raw.githubusercontent.com/MRoldL001/ENM/main/install.cmd)。
+2. 下载 [`install.ps1`](https://raw.githubusercontent.com/MRoldL001/ENM/main/install.ps1)。
+3. 保持文件名不变，并把两个文件放进同一个文件夹。
+4. 双击 `install.cmd`。
+5. 选择 `Download ENM from GitHub Releases`，再用方向键选择版本并按 Enter。
+
+两个安装器文件必须同时存在，因为 `install.cmd` 会启动同目录下的 `install.ps1`。联网安装会下载所选 Release 的 `Source code (zip)`，在系统临时目录中解压并安装；无论成功还是失败，临时下载和解压文件都会被清理。你手动下载的 `install.cmd` 和 `install.ps1` 不会被删除。
+
+#### 从 PowerShell 启动
+
+无论采用哪种下载方式，也可以在安装器所在目录打开 PowerShell：
 
 ```powershell
 .\install.ps1
 ```
 
-显示界面后可选择：
+安装界面的两个选项分别表示：
 
 - `Install ENM from this folder`：检查安装器所在目录是否包含完整 ENM 源码，然后从本地安装；不会删除本地源码。
-- `Download ENM from GitHub Releases`：从 [ENM Releases](https://github.com/MRoldL001/ENM/releases) 获取最新 Release 自动生成的 `Source code (zip)`，临时解压、安装，并在结束后删除下载及解压文件。
+- `Download ENM from GitHub Releases`：读取 [ENM Releases](https://github.com/MRoldL001/ENM/releases)，继续使用方向键选择版本，再下载该 Release 自动生成的 `Source code (zip)`。源码会被临时解压，并在安装结束后删除。
 
-网络安装不要求 Release 额外上传 wheel 或自定义压缩包。但目标仓库必须至少发布一个 Release；只有源码提交、没有 Release 时无法使用网络安装。
+也可以跳过交互选择，直接指定网络版本：
+
+```powershell
+.\install.ps1 -Source GitHub -Version 0.1.0
+```
 
 完成后请打开一个新终端并确认：
 
@@ -77,7 +109,7 @@ enm doctor
 安装器会比较源码包与本机已安装的 ENM 版本。源码包版本更低时会拒绝降级；相同版本允许重新安装。这个限制只针对 ENM 自身，不影响安装或切换旧版 EUI-NEO SDK。
 
 > [!WARNING]
-> 本地安装要求安装器与完整源码位于同一目录；单独下载安装器时请选择 GitHub Releases。暂未提供独立 EXE 或离线安装包。
+> 只有完整解压 Release 源码后才能选择本地安装。只下载两个安装器文件时必须选择 GitHub Releases，并保持网络可用。
 
 卸载：
 

@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [ValidateSet("Local", "GitHub")]
-    [string]$Source
+    [string]$Source,
+    [ValidatePattern('^v?\d+\.\d+\.\d+$')]
+    [string]$Version
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,7 +13,7 @@ $python = (Get-Command python -ErrorAction Stop).Source
 $installRoot = Join-Path $env:LOCALAPPDATA "Programs\enm"
 $binDir = Join-Path $installRoot "bin"
 $launcher = Join-Path $binDir "enm.cmd"
-$releaseApi = "https://api.github.com/repos/MRoldL001/ENM/releases/latest"
+$releaseApi = "https://api.github.com/repos/MRoldL001/ENM/releases?per_page=100"
 
 function Show-Banner {
     $encoded = "4paI4paI4paI4paI4paI4paI4paI4pWX4paI4paI4paI4pWXICAg4paI4paI4pWX4paI4paI4paI4pWXICAg4paI4paI4paI4pWXCuKWiOKWiOKVlOKVkOKVkOKVkOKVkOKVneKWiOKWiOKWiOKWiOKVlyAg4paI4paI4pWR4paI4paI4paI4paI4pWXIOKWiOKWiOKWiOKWiOKVkQrilojilojilojilojilojilZcgIOKWiOKWiOKVlOKWiOKWiOKVlyDilojilojilZHilojilojilZTilojilojilojilojilZTilojilojilZEK4paI4paI4pWU4pWQ4pWQ4pWdICDilojilojilZHilZrilojilojilZfilojilojilZHilojilojilZHilZrilojilojilZTilZ3ilojilojilZEK4paI4paI4paI4paI4paI4paI4paI4pWX4paI4paI4pWRIOKVmuKWiOKWiOKWiOKWiOKVkeKWiOKWiOKVkSDilZrilZDilZ0g4paI4paI4pWRCuKVmuKVkOKVkOKVkOKVkOKVkOKVkOKVneKVmuKVkOKVnSAg4pWa4pWQ4pWQ4pWQ4pWd4pWa4pWQ4pWdICAgICDilZrilZDilZ0K"
@@ -45,6 +47,39 @@ function Select-InstallSource {
                 "UpArrow" { $selected = ($selected - 1 + $options.Count) % $options.Count }
                 "DownArrow" { $selected = ($selected + 1) % $options.Count }
                 "Enter" { return @("Local", "GitHub")[$selected] }
+                "Escape" { throw "Installation cancelled." }
+            }
+        }
+    } finally {
+        [Console]::CursorVisible = $true
+    }
+}
+
+function Select-Release {
+    param([Parameter(Mandatory)] [object[]]$Releases)
+    if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) {
+        throw "Release selection requires a terminal. Pass -Version X.Y.Z."
+    }
+    $selected = 0
+    $top = [Console]::CursorTop
+    [Console]::CursorVisible = $false
+    try {
+        while ($true) {
+            [Console]::SetCursorPosition(0, $top)
+            Write-Host "Choose an ENM version:" -ForegroundColor White
+            for ($index = 0; $index -lt $Releases.Count; $index++) {
+                $release = $Releases[$index]
+                $prefix = if ($index -eq $selected) { ">" } else { " " }
+                $color = if ($index -eq $selected) { "Cyan" } else { "Gray" }
+                $suffix = if ($release.prerelease) { " (pre-release)" } else { "" }
+                Write-Host ("{0} {1}{2}" -f $prefix, $release.tag_name, $suffix).PadRight(64) -ForegroundColor $color
+            }
+            Write-Host "Use Up/Down arrows and Enter.".PadRight(64) -ForegroundColor DarkGray
+            $key = [Console]::ReadKey($true).Key
+            switch ($key) {
+                "UpArrow" { $selected = ($selected - 1 + $Releases.Count) % $Releases.Count }
+                "DownArrow" { $selected = ($selected + 1) % $Releases.Count }
+                "Enter" { return $Releases[$selected] }
                 "Escape" { throw "Installation cancelled." }
             }
         }
@@ -120,19 +155,33 @@ function Get-LocalPackage {
 }
 
 function Get-GitHubPackage {
+    param([string]$RequestedVersion)
     $headers = @{
         Accept = "application/vnd.github+json"
         "User-Agent" = "enm-installer/0.1"
         "X-GitHub-Api-Version" = "2022-11-28"
     }
     try {
-        $release = Invoke-WithClover "Checking GitHub Releases" {
+        $releases = @(Invoke-WithClover "Checking GitHub Releases" {
             param($Uri, $Headers)
             $ErrorActionPreference = "Stop"
             Invoke-RestMethod -Uri $Uri -Headers $Headers
-        } @($releaseApi, $headers)
+        } @($releaseApi, $headers))
     } catch {
-        throw "Could not read the latest ENM Release. No published Release was found, or GitHub could not be reached."
+        throw "Could not read ENM Releases. No published Release was found, or GitHub could not be reached."
+    }
+    $releases = @($releases | Where-Object { $_ -and $_.tag_name -and -not $_.draft })
+    if (-not $releases.Count) {
+        throw "No published ENM Release was found."
+    }
+    if ($RequestedVersion) {
+        $wantedTag = if ($RequestedVersion.StartsWith("v")) { $RequestedVersion } else { "v$RequestedVersion" }
+        $release = @($releases | Where-Object { $_.tag_name -eq $wantedTag }) | Select-Object -First 1
+        if (-not $release) {
+            throw "ENM Release $wantedTag was not found."
+        }
+    } else {
+        $release = Select-Release -Releases $releases
     }
     $versionMatch = [regex]::Match("$($release.tag_name)", '^v?(?<version>\d+\.\d+\.\d+)$')
     if (-not $versionMatch.Success) {
@@ -204,7 +253,10 @@ if (-not $Source) {
 $package = $null
 $installError = $null
 try {
-    $package = if ($Source -eq "Local") { Get-LocalPackage } else { Get-GitHubPackage }
+    if ($Source -eq "Local" -and $Version) {
+        throw "-Version can only be used with -Source GitHub."
+    }
+    $package = if ($Source -eq "Local") { Get-LocalPackage } else { Get-GitHubPackage -RequestedVersion $Version }
     Assert-NotDowngrade $package.Version
     Write-Host "Installing ENM $($package.Version) from $Source source."
     Invoke-WithClover "Installing ENM $($package.Version)" {
