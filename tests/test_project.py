@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from enm.package import package_stage
+from enm.package import package_stage, remove_packaged_stage
 from enm.project import (
     _write_cmake_initial_cache,
     create_project,
@@ -90,6 +90,10 @@ class ProjectTests(unittest.TestCase):
             archive, digest = package_stage(stage, "zip")
             self.assertTrue(archive.exists())
             self.assertIn(archive.name, digest.read_text(encoding="ascii"))
+            remove_packaged_stage(stage, stage.parent)
+            self.assertFalse(stage.exists())
+            self.assertTrue(archive.exists())
+            self.assertTrue(digest.exists())
 
 
 if __name__ == "__main__":

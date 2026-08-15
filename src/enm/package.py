@@ -105,16 +105,23 @@ def package_stage(stage: Path, format_name: str) -> tuple[Path, Path]:
     dist = stage.parent
     if format_name == "zip":
         archive = dist / f"{stage.name}.zip"
-        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as out:
-            for path in sorted(stage.rglob("*")):
-                if path.is_file():
-                    out.write(path, Path(stage.name) / path.relative_to(stage))
     elif format_name == "tar.gz":
         archive = dist / f"{stage.name}.tar.gz"
-        with tarfile.open(archive, "w:gz") as out:
-            out.add(stage, arcname=stage.name)
     else:
         raise ReleaseError(f"unsupported package format: {format_name}")
+    temporary = archive.with_name(archive.name + ".tmp")
+    try:
+        if format_name == "zip":
+            with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as out:
+                for path in sorted(stage.rglob("*")):
+                    if path.is_file():
+                        out.write(path, Path(stage.name) / path.relative_to(stage))
+        else:
+            with tarfile.open(temporary, "w:gz") as out:
+                out.add(stage, arcname=stage.name)
+        temporary.replace(archive)
+    finally:
+        temporary.unlink(missing_ok=True)
     digest = hashlib.sha256()
     with archive.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
@@ -122,3 +129,11 @@ def package_stage(stage: Path, format_name: str) -> tuple[Path, Path]:
     sidecar = archive.with_name(archive.name + ".sha256")
     sidecar.write_text(f"{digest.hexdigest()}  {archive.name}\n", encoding="ascii")
     return archive, sidecar
+
+
+def remove_packaged_stage(stage: Path, dist_root: Path) -> None:
+    stage = stage.resolve()
+    dist_root = dist_root.resolve()
+    if not stage.is_dir() or stage.parent != dist_root or stage == dist_root:
+        raise ReleaseError(f"refusing to remove invalid package staging directory: {stage}")
+    shutil.rmtree(stage)

@@ -8,7 +8,7 @@ from pathlib import Path
 from . import __version__
 from .doctor import checks_as_dict, run_doctor
 from .github import ReleaseClient, ReleaseError, normalize_arch, normalize_platform, normalize_tag
-from .package import deploy, package_stage
+from .package import deploy, package_stage, remove_packaged_stage
 from .project import (
     build,
     configure,
@@ -229,7 +229,11 @@ def cmd_deploy(args: argparse.Namespace) -> int:
 def cmd_package(args: argparse.Namespace) -> int:
     root = _project(args)
     stage = deploy(root, _store(args), binary=Path(args.binary) if args.binary else None, force=True)
-    archive, sidecar = package_stage(stage, args.format)
+    try:
+        archive, sidecar = package_stage(stage, args.format)
+    finally:
+        if stage.exists():
+            remove_packaged_stage(stage, root / "dist")
     print(archive)
     print(sidecar)
     return 0
