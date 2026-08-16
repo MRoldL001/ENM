@@ -17,6 +17,7 @@ from enm.doctor import (
     _compiler_family,
     _compiler_version,
     _cpp17_probe,
+    _detect_backends,
     _detect_package_manager,
     _find_compiler,
     _install_command,
@@ -179,9 +180,33 @@ class DoctorSdkTests(unittest.TestCase):
                     with mock.patch("enm.doctor._compiler_check", return_value=[]):
                         with mock.patch("enm.doctor._linux_system_deps", return_value=[]):
                             with mock.patch("enm.doctor._opengl_check", return_value=Check("opengl", "ok", "ok")):
+                                checks = run_doctor(store)
+            sdk_check = next(check for check in checks if check.name == "eui-sdk")
+            self.assertEqual(sdk_check.status, "missing")
+            self.assertTrue(sdk_check.required)
+
+    def test_run_doctor_with_missing_project_sdk(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = {
+                "schema": 1,
+                "name": "test",
+                "version": "0.1.0",
+                "target": "test",
+                "eui": {"version": "v99.99.99"},
+                "build_dir": "build/default",
+            }
+            (root / "enm-project.json").write_text(json.dumps(manifest), encoding="utf-8")
+            store = StateStore(root)
+            with mock.patch("enm.doctor._tool_versions", return_value=[]):
+                with mock.patch("enm.doctor._visual_studio_check", return_value=[]):
+                    with mock.patch("enm.doctor._compiler_check", return_value=[]):
+                        with mock.patch("enm.doctor._linux_system_deps", return_value=[]):
+                            with mock.patch("enm.doctor._opengl_check", return_value=Check("opengl", "ok", "ok")):
                                 checks = run_doctor(store, project_root=root)
             sdk_check = next(check for check in checks if check.name == "eui-sdk")
             self.assertEqual(sdk_check.status, "missing")
+            self.assertIn("v99.99.99", sdk_check.detail)
             self.assertTrue(sdk_check.required)
 
 
@@ -319,6 +344,73 @@ class DoctorCliTests(unittest.TestCase):
         args.home = None
         args.json = False
         self.assertEqual(cmd_doctor_fix(args), 2)
+
+
+class BackendDetectionTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write_manifest(self, build_dir="build/default"):
+        manifest = {
+            "schema": 1,
+            "name": "test",
+            "version": "0.1.0",
+            "target": "test",
+            "eui": {"version": "v0.2.0"},
+            "build_dir": build_dir,
+        }
+        (self.tmp / "enm-project.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    def test_defaults_without_project(self):
+        window, render, fetch = _detect_backends(None)
+        self.assertEqual(window, "glfw")
+        self.assertEqual(render, "opengl")
+        self.assertFalse(fetch)
+
+    def test_defaults_with_project(self):
+        self._write_manifest()
+        window, render, fetch = _detect_backends(self.tmp)
+        self.assertEqual(window, "glfw")
+        self.assertEqual(render, "opengl")
+        self.assertFalse(fetch)
+
+    def test_detects_from_cmake_lists(self):
+        self._write_manifest()
+        (self.tmp / "CMakeLists.txt").write_text(
+            'set(EUI_WINDOW_BACKEND "SDL2")\nset(EUI_RENDER_BACKEND "Vulkan")\nset(EUI_DEPS_MODE "fetch")\n',
+            encoding="utf-8",
+        )
+        window, render, fetch = _detect_backends(self.tmp)
+        self.assertEqual(window, "sdl2")
+        self.assertEqual(render, "vulkan")
+        self.assertTrue(fetch)
+
+    def test_cmake_cache_overrides_lists(self):
+        self._write_manifest()
+        (self.tmp / "CMakeLists.txt").write_text(
+            'set(EUI_WINDOW_BACKEND "SDL2")\nset(EUI_RENDER_BACKEND "Vulkan")\n',
+            encoding="utf-8",
+        )
+        build_dir = self.tmp / "build/default"
+        build_dir.mkdir(parents=True)
+        (build_dir / "CMakeCache.txt").write_text(
+            "EUI_WINDOW_BACKEND:STRING=glfw\nEUI_RENDER_BACKEND:STRING=opengl\n",
+            encoding="utf-8",
+        )
+        window, render, fetch = _detect_backends(self.tmp)
+        self.assertEqual(window, "glfw")
+        self.assertEqual(render, "opengl")
+        self.assertFalse(fetch)
+
+    def test_legacy_build_dir_fallback(self):
+        self._write_manifest("build/sdl2-vulkan")
+        window, render, fetch = _detect_backends(self.tmp)
+        self.assertEqual(window, "sdl2")
+        self.assertEqual(render, "vulkan")
+        self.assertFalse(fetch)
 
 
 if __name__ == "__main__":

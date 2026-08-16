@@ -8,7 +8,7 @@ import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .github import ReleaseError
+from .github import ReleaseError, normalize_arch, normalize_platform
 from .msvc import find_visual_studio
 from .project import load_manifest
 from .state import StateStore
@@ -422,32 +422,129 @@ def _network_check(fetch_mode: bool) -> Check:
     return Check("network", status, "cannot reach github.com; required when EUI_DEPS_MODE=fetch or legacy source download is needed", required=fetch_mode)
 
 
+def _read_cmake_cache(project_root: Path) -> dict[str, str]:
+    """Parse CMakeCache.txt for EUI-NEO option values."""
+    cache: dict[str, str] = {}
+    try:
+        manifest = load_manifest(project_root)
+        build_dir = project_root / manifest.get("build_dir", "build/default")
+        cache_file = build_dir / "CMakeCache.txt"
+        if not cache_file.is_file():
+            return cache
+        text = cache_file.read_text(encoding="utf-8", errors="ignore")
+    except (ReleaseError, OSError):
+        return cache
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("//") or line.startswith("#"):
+            continue
+        match = re.match(r"^(EUI_[A-Z_]+):\w+=(.*)$", line)
+        if match:
+            cache[match.group(1)] = match.group(2).strip()
+    return cache
+
+
+def _scan_cmake_options(project_root: Path) -> dict[str, str]:
+    """Scan CMakeLists.txt and project .cmake files for EUI-NEO backend/deps options."""
+    options: dict[str, str] = {}
+    files: list[Path] = []
+    cmake = project_root / "CMakeLists.txt"
+    if cmake.is_file():
+        files.append(cmake)
+    try:
+        files.extend(project_root.rglob("*.cmake"))
+    except OSError:
+        pass
+    for path in files:
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for name in ("EUI_WINDOW_BACKEND", "EUI_RENDER_BACKEND", "EUI_DEPS_MODE"):
+            pattern = rf"\bset\s*\(\s*{re.escape(name)}\s+['\"]?([^'\"\)\s]+)"
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                options[name] = match.group(1).strip().lower()
+    return options
+
+
 def _detect_backends(project_root: Path | None) -> tuple[str, str, bool]:
-    """Return (window_backend, render_backend, fetch_mode) defaults from manifest or build dir."""
+    """Return (window_backend, render_backend, fetch_mode) from project files or defaults."""
     window_backend = "glfw"
     render_backend = "opengl"
     fetch_mode = False
-    if project_root:
+    if not project_root:
+        return window_backend, render_backend, fetch_mode
+
+    cache = _read_cmake_cache(project_root)
+    options = _scan_cmake_options(project_root)
+    options.update(cache)
+
+    window = options.get("EUI_WINDOW_BACKEND", "")
+    render = options.get("EUI_RENDER_BACKEND", "")
+    deps_mode = options.get("EUI_DEPS_MODE", "")
+
+    if window in {"glfw", "sdl2"}:
+        window_backend = window
+    elif "sdl2" in window:
+        window_backend = "sdl2"
+
+    if render in {"opengl", "vulkan"}:
+        render_backend = render
+    elif "vulkan" in render or render.startswith("vk"):
+        render_backend = "vulkan"
+
+    fetch_mode = deps_mode == "fetch"
+
+    # Legacy fallback: infer from build directory name when no CMake option is present.
+    if "EUI_WINDOW_BACKEND" not in options or "EUI_RENDER_BACKEND" not in options:
         try:
             manifest = load_manifest(project_root)
-            # Manifest does not yet store backend preferences; infer from build directory name if present
             build_dir_name = Path(manifest.get("build_dir", "build/default")).name.lower()
         except ReleaseError:
             build_dir_name = "default"
-        if "sdl2" in build_dir_name:
+        if "sdl2" in build_dir_name and "EUI_WINDOW_BACKEND" not in options:
             window_backend = "sdl2"
-        if "vk" in build_dir_name or "vulkan" in build_dir_name:
+        if ("vk" in build_dir_name or "vulkan" in build_dir_name) and "EUI_RENDER_BACKEND" not in options:
             render_backend = "vulkan"
+
     return window_backend, render_backend, fetch_mode
 
 
 def _sdk_check(store: StateStore, project_root: Path | None, deep: bool, temp_root: Path | None = None) -> list[Check]:
     checks: list[Check] = []
-    try:
-        sdk = store.active()
-    except ReleaseError as exc:
-        checks.append(Check("eui-sdk", "missing", str(exc), required=True))
-        return checks
+    sdk = None
+    if project_root:
+        try:
+            manifest = load_manifest(project_root)
+        except ReleaseError as exc:
+            checks.append(Check("eui-sdk", "error", f"cannot read project manifest: {exc}", required=True))
+            return checks
+        version = manifest.get("eui", {}).get("version")
+        if not version:
+            checks.append(Check("eui-sdk", "error", f"{project_root / 'enm-project.json'} does not pin an EUI-NEO version", required=True))
+            return checks
+        platform = normalize_platform()
+        arch = normalize_arch()
+        try:
+            sdk = store.get_installed(version, platform, arch)
+        except ReleaseError:
+            checks.append(
+                Check(
+                    "eui-sdk",
+                    "missing",
+                    f"EUI-NEO {version} ({platform}-{arch}) is required by the project but not installed; run 'enm sdk install {version}'",
+                    str(project_root),
+                    required=True,
+                )
+            )
+            return checks
+    if sdk is None:
+        try:
+            sdk = store.active()
+        except ReleaseError as exc:
+            checks.append(Check("eui-sdk", "missing", str(exc), required=True))
+            return checks
 
     config = next(iter(sdk.path.rglob("EuiNeoConfig.cmake")), None)
     if not config:

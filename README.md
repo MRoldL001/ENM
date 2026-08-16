@@ -16,7 +16,7 @@
 </div>
 
 <div align="center">
-  <img src="https://img.shields.io/badge/ENM-0.2.0-2F80ED?style=flat-square" alt="ENM 0.2.0">
+  <img src="https://img.shields.io/badge/ENM-0.2.1-2F80ED?style=flat-square" alt="ENM 0.2.1">
   <img src="https://img.shields.io/badge/Python-%E2%89%A53.9-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.9+">
   <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT License">
   <img src="https://img.shields.io/badge/Status-Experimental-orange?style=flat-square" alt="Experimental">
@@ -96,7 +96,7 @@ ENM 不提供独立 EXE。你可以下载完整源码，也可以只保留两个
 也可以跳过交互选择，直接指定网络版本：
 
 ```powershell
-.\install.ps1 -Source GitHub -Version 0.2.0
+.\install.ps1 -Source GitHub -Version 0.2.1
 ```
 
 完成后请打开一个新终端并确认：
@@ -399,7 +399,7 @@ python -m unittest discover -s tests -v
 
 ## ⚠️ 当前状态
 
-- ENM 仍处于实验阶段，当前版本为 `0.2.0`
+- ENM 仍处于实验阶段，当前版本为 `0.2.1`
 - 主要在 Windows x64 上进行了实际验证
 - Linux 与 macOS 支持尚未经过同等程度的测试
 - `enm doctor fix` 可尝试一键安装部分依赖（CMake、Ninja、Linux 系统库等），但编译器、Visual Studio、Vulkan SDK 等仍可能需要手动安装；加 `--yes` 自动确认必需依赖
