@@ -382,7 +382,7 @@ enm init "My App" --path my-app --ci github `
 
 ### `enm about` — 关于
 
-显示 ENM 的版本号、作者与许可证信息
+显示 ENM 的版本号、维护者与许可证信息
 
 ---
 
