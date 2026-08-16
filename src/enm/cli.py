@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
+import time
 from pathlib import Path
 
 from . import __version__
@@ -20,7 +22,7 @@ from .project import (
     test,
 )
 from .state import StateStore
-from .ui import GREEN, RED, YELLOW, Spinner, color, level_label, yes_no
+from .ui import CYAN, GREEN, RED, YELLOW, Spinner, color, level_label, yes_no
 
 
 def _store(args: argparse.Namespace) -> StateStore:
@@ -89,6 +91,35 @@ def cmd_doctor_fix(args: argparse.Namespace) -> int:
             deep=args.deep,
         )
     return _print_checks(checks, json_output=getattr(args, "json", False))
+
+
+def cmd_about(args: argparse.Namespace) -> int:
+    banner = (
+        "███████╗███╗   ██╗███╗   ███╗\n"
+        "██╔════╝████╗  ██║████╗ ████║\n"
+        "█████╗  ██╔██╗ ██║██╔████╔██║\n"
+        "██╔══╝  ██║╚██╗██║██║╚██╔╝██║\n"
+        "███████╗██║ ╚████║██║ ╚═╝ ██║\n"
+        "╚══════╝╚═╝  ╚═══╝╚═╝     ╚═╝"
+    )
+    print(color(banner, CYAN))
+    print()
+    print(f"ENM v{__version__} · maintained by MRoldL001 · MIT License")
+    print()
+
+    done = threading.Event()
+
+    def _wait_for_enter() -> None:
+        try:
+            input()
+        finally:
+            done.set()
+
+    threading.Thread(target=_wait_for_enter, daemon=True).start()
+    with Spinner("Press Enter to continue..."):
+        while not done.is_set():
+            time.sleep(0.05)
+    return 0
 
 
 def cmd_sdk_list(args: argparse.Namespace) -> int:
@@ -358,6 +389,9 @@ def parser() -> argparse.ArgumentParser:
     package_parser.add_argument("--binary")
     package_parser.add_argument("--format", choices=("zip", "tar.gz"), default="zip")
     package_parser.set_defaults(func=cmd_package)
+
+    about_parser = commands.add_parser("about", help="show ENM banner, version, and credits")
+    about_parser.set_defaults(func=cmd_about)
 
     ci = commands.add_parser("ci", help="manage consumer CI")
     ci_commands = ci.add_subparsers(dest="ci_command", required=True)

@@ -16,7 +16,7 @@
 </div>
 
 <div align="center">
-  <img src="https://img.shields.io/badge/ENM-0.2.2-2F80ED?style=flat-square" alt="ENM 0.2.2">
+  <img src="https://img.shields.io/badge/ENM-0.2.3-2F80ED?style=flat-square" alt="ENM 0.2.3">
   <img src="https://img.shields.io/badge/Python-%E2%89%A53.9-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.9+">
   <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT License">
   <img src="https://img.shields.io/badge/Status-Experimental-orange?style=flat-square" alt="Experimental">
@@ -96,7 +96,7 @@ ENM 不提供独立 EXE。你可以下载完整源码，也可以只保留两个
 也可以跳过交互选择，直接指定网络版本：
 
 ```powershell
-.\install.ps1 -Source GitHub -Version 0.2.2
+.\install.ps1 -Source GitHub -Version 0.2.3
 ```
 
 完成后请打开一个新终端并确认：
@@ -313,8 +313,8 @@ enm init "My App" --path my-app --ci github `
 | `--deep`             | 额外用真实 CMake configure 验证当前 SDK 与本机工具链是否兼容 |
 | `--json`             | 以 JSON 格式输出检查结果                           |
 | `fix`                | 进入依赖补全模式                                  |
-| `fix --yes`          | 自动确认安装必需依赖；不能与 `--force` 同时使用            |
-| `fix --force`        | 同时询问安装可选依赖；不能与 `--yes` 同时使用              |
+| `fix --yes`          | 自动确认安装必需依赖；不能与 `--force` 同时使用             |
+| `fix --force`        | 同时询问安装可选依赖；不能与 `--yes` 同时使用               |
 | `fix --project <路径>` | 与 `doctor --project` 相同，用于 fix 模式         |
 | `fix --deep`         | 与 `doctor --deep` 相同，用于 fix 模式            |
 
@@ -380,6 +380,12 @@ enm init "My App" --path my-app --ci github `
 | `--project <路径>`      | 指定项目目录                                                                |
 | `--install-spec <地址>` | 必填，CI 中安装 ENM 的 pip 源地址，例如 `git+https://github.com/OWNER/enm.git@TAG` |
 
+### `enm about` — 关于
+
+显示 ENM 的版本号、作者与许可证信息
+
+---
+
 每个命令都可以使用 `--help` 查看完整选项，例如：
 
 ```powershell
@@ -387,8 +393,6 @@ enm sdk install --help
 ```
 
 ## 🧩 给开发者
-
-
 
 从源码参与开发时可使用：
 
@@ -399,7 +403,7 @@ python -m unittest discover -s tests -v
 
 ## ⚠️ 当前状态
 
-- ENM 仍处于实验阶段，当前版本为 `0.2.2`
+- ENM 仍处于实验阶段，当前版本为 `0.2.3`
 - 主要在 Windows x64 上进行了实际验证
 - Linux 与 macOS 支持尚未经过同等程度的测试
 - `enm doctor fix` 可尝试一键安装部分依赖（CMake、Ninja、Linux 系统库等），但编译器、Visual Studio、Vulkan SDK 等仍可能需要手动安装；加 `--yes` 自动确认必需依赖

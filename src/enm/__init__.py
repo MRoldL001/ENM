@@ -1,3 +1,3 @@
 """ENM: an unofficial EUI-NEO toolchain manager."""
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"

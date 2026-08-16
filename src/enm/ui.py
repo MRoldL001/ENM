@@ -11,6 +11,7 @@ UTF8_CLOVER_FRAMES = (".", "·", "+", "✣", "✤", "✣", "+", "·")
 LEGACY_CLOVER_FRAMES = (".", "·", "+", "¤", "◆", "¤", "+", "·")
 BLUE = "\x1b[34m"
 BRIGHT_BLUE = "\x1b[94m"
+CYAN = "\x1b[36m"
 GREEN = "\x1b[32m"
 YELLOW = "\x1b[33m"
 RED = "\x1b[31m"

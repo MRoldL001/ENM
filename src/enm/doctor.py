@@ -647,7 +647,7 @@ def _deep_sdk_probe(sdk, config: Path, temp_root: Path | None = None) -> Check:
         except (OSError, subprocess.TimeoutExpired) as exc:
             return Check("sdk-toolchain", "error", f"deep probe failed: {exc}", str(sdk.path))
         if result.returncode == 0:
-            return Check("sdk-toolchain", "ok", "SDK can be configured with the active toolchain", str(sdk.path))
+            return Check("sdk-toolchain", "ok", "SDK can be configured with the current toolchain", str(sdk.path))
         output = (result.stderr or result.stdout or "").strip()
         first_error = next((line for line in output.splitlines() if "error" in line.lower() or "fatal" in line.lower()), output.splitlines()[0] if output else "configuration failed")
         return Check("sdk-toolchain", "unsupported", first_error, str(sdk.path))

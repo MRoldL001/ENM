@@ -166,7 +166,10 @@ function Get-GitHubPackage {
         $releases = @(Invoke-WithClover "Checking GitHub Releases" {
             param($Uri, $Headers)
             $ErrorActionPreference = "Stop"
-            Invoke-RestMethod -Uri $Uri -Headers $Headers
+            $response = Invoke-RestMethod -Uri $Uri -Headers $Headers
+            foreach ($release in @($response)) {
+                Write-Output $release
+            }
         } @($releaseApi, $headers))
     } catch {
         throw "Could not read ENM Releases. No published Release was found, or GitHub could not be reached."
