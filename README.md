@@ -16,7 +16,7 @@
 </div>
 
 <div align="center">
-  <img src="https://img.shields.io/badge/ENM-0.1.0-2F80ED?style=flat-square" alt="ENM 0.1.0">
+  <img src="https://img.shields.io/badge/ENM-0.2.0-2F80ED?style=flat-square" alt="ENM 0.2.0">
   <img src="https://img.shields.io/badge/Python-%E2%89%A53.9-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.9+">
   <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT License">
   <img src="https://img.shields.io/badge/Status-Experimental-orange?style=flat-square" alt="Experimental">
@@ -96,7 +96,7 @@ ENM 不提供独立 EXE。你可以下载完整源码，也可以只保留两个
 也可以跳过交互选择，直接指定网络版本：
 
 ```powershell
-.\install.ps1 -Source GitHub -Version 0.1.0
+.\install.ps1 -Source GitHub -Version 0.2.0
 ```
 
 完成后请打开一个新终端并确认：
@@ -249,14 +249,27 @@ enm package --format zip
 enm doctor
 ```
 
+`enm doctor` 会按上游实际需求做能力探测，而不只是匹配版本号：编译器是否真正支持 C++17、OpenGL 开发文件、平台系统依赖、所选窗口/渲染后端、SDK 头文件与库完整性等。
+
+常用形式：
+
+```powershell
+enm doctor                       # 常规检查
+enm doctor --deep                # 额外做一次真实 CMake configure，验证 SDK 与本机工具链是否兼容
+enm doctor --project ./my-app    # 根据项目推断后端依赖（如 SDL2 / Vulkan）
+enm doctor fix                   # 列出缺失依赖并询问安装
+enm doctor fix --yes             # 自动安装必需依赖，可选依赖仍会询问
+```
+
 输出标记：
 
 - `OK`：已找到并可使用
 - `--`：可选项目未找到，通常不影响当前操作
 - `!!`：需要处理的问题
+- `++`：本次 `fix` 已安装，随后会重跑检查确认
 - `??`：暂时无法确认，例如 Visual Studio 正在安装或更新
 
-如果提示 `msvc-sdk-abi` 不兼容，请先通过 Visual Studio Installer 更新 Visual Studio 2022 Build Tools，然后删除项目的 `build` 目录并重新构建：
+如果提示 `vs-version` 或 `c++17` 不兼容，请先通过 Visual Studio Installer 更新 Visual Studio 2022 Build Tools，然后删除项目的 `build` 目录并重新构建：
 
 ```powershell
 Remove-Item -Recurse -Force .\build
@@ -284,22 +297,88 @@ enm init "My App" --path my-app --ci github `
 
 ## 🔧 命令列表
 
-| 命令                          | 用途                   | 常用选项或参数                            |
-| --------------------------- | -------------------- | ---------------------------------- |
-| `enm doctor`                | 检查本机环境和当前 SDK        | `--json` 输出 JSON                   |
-| `enm sdk list [VERSION]`    | 查看全部版本或指定版本的状态       | `--include-prerelease`、`--json`    |
-| `enm sdk installed`         | 查看当前电脑已安装的 SDK       | `--json` 输出 JSON                   |
-| `enm sdk install [VERSION]` | 下载并激活 SDK，省略版本时使用最新版 | `latest`、`vX.Y.Z`                  |
-| `enm sdk use VERSION`       | 切换当前 SDK             | `vX.Y.Z`                           |
-| `enm sdk path`              | 显示当前 SDK 的本地路径       | -                                  |
-| `enm sdk uninstall VERSION` | 删除明确指定的本地 SDK        | 删除已启用的 SDK 需先切换，或明确使用 `--force`    |
-| `enm init NAME`             | 创建新应用                | `--path`、`--version`、`--ci github` |
-| `enm configure`             | 为当前项目准备构建环境          | `-- CMAKE_ARGS...`                 |
-| `enm build`                 | 构建当前项目               | `-- BUILD_ARGS...`                 |
-| `enm test`                  | 运行项目登记的 CTest 测试     | `-- CTEST_ARGS...`                 |
-| `enm deploy`                | 把运行文件整理到 `dist/`     | `--binary`、`--force`               |
-| `enm package`               | 打包运行目录并生成校验文件        | `--format zip` 或 `--format tar.gz` |
-| `enm ci init github`        | 创建 GitHub Actions    | `--install-spec SPEC`              |
+### 全局参数
+
+| 参数          | 说明                        |
+| ----------- | ------------------------- |
+| `--help`    | 显示帮助信息                    |
+| `--version` | 显示 ENM 版本号                |
+| `--home`    | 覆盖 ENM 状态目录（默认在各自系统用户目录下） |
+
+### `enm doctor` — 环境检查
+
+| 参数/子命令               | 说明                                        |
+| -------------------- | ----------------------------------------- |
+| `--project <路径>`     | 指定项目目录，根据 `enm-project.json` 推断窗口/渲染后端依赖  |
+| `--deep`             | 额外用真实 CMake configure 验证当前 SDK 与本机工具链是否兼容 |
+| `--json`             | 以 JSON 格式输出检查结果                           |
+| `fix`                | 进入依赖补全模式                                  |
+| `fix --yes`          | 自动确认安装必需依赖；不能与 `--force` 同时使用            |
+| `fix --force`        | 同时询问安装可选依赖；不能与 `--yes` 同时使用              |
+| `fix --project <路径>` | 与 `doctor --project` 相同，用于 fix 模式         |
+| `fix --deep`         | 与 `doctor --deep` 相同，用于 fix 模式            |
+
+### `enm sdk` — SDK 管理
+
+| 参数/子命令                         | 说明                               |
+| ------------------------------ | -------------------------------- |
+| `list [VERSION]`               | 从 GitHub Releases 查看版本列表；可指定单个版本 |
+| `list --include-prerelease`    | 包含预发布版本                          |
+| `list --json`                  | 以 JSON 格式输出                      |
+| `installed`                    | 查看本机已安装的 SDK，不访问网络               |
+| `installed --json`             | 以 JSON 格式输出                      |
+| `install [VERSION]`            | 下载、校验并激活 SDK；省略版本时默认 `latest`    |
+| `install --include-prerelease` | 允许安装预发布版本                        |
+| `install --force`              | 允许重新下载已安装的版本                     |
+| `install --allow-unverified`   | 跳过文件摘要校验（不推荐）                    |
+| `use VERSION`                  | 切换到已安装的某个 SDK 版本                 |
+| `path`                         | 输出当前激活 SDK 的本地路径                 |
+| `uninstall VERSION`            | 删除指定版本的本地 SDK                    |
+| `uninstall --force`            | 允许删除当前激活的 SDK                    |
+
+### `enm init` — 创建应用
+
+| 参数               | 说明                                           |
+| ---------------- | -------------------------------------------- |
+| `NAME`           | 应用名称，会用于目录和项目配置                              |
+| `--path <路径>`    | 指定项目创建目录，默认使用应用名                             |
+| `--version <标签>` | 固定使用的 EUI-NEO 版本，默认使用当前激活或最新版                |
+| `--force`        | 目录已存在时覆盖                                     |
+| `--ci github`    | 同时创建 GitHub Actions 工作流                      |
+| `--install-spec` | 与 `--ci github` 一起使用，指定 CI 中安装 ENM 的 pip 源地址 |
+
+### `enm configure` / `enm build` / `enm test`
+
+| 参数               | 说明                                                   |
+| ---------------- | ---------------------------------------------------- |
+| `--project <路径>` | 指定项目目录，默认在当前目录查找                                     |
+| `-- <额外参数>`      | `--` 之后的所有参数原样传给 CMake（configure/build）或 CTest（test） |
+
+### `enm deploy` — 整理运行文件
+
+| 参数                   | 说明                 |
+| -------------------- | ------------------ |
+| `--project <路径>`     | 指定项目目录             |
+| `--destination <路径>` | 自定义输出目录，默认 `dist/` |
+| `--binary <文件名>`     | 显式指定要部署的主程序名       |
+| `--force`            | 输出目录已存在时覆盖         |
+
+### `enm package` — 打包
+
+| 参数                | 说明            |
+| ----------------- | ------------- |
+| `--project <路径>`  | 指定项目目录        |
+| `--binary <文件名>`  | 显式指定要打包的主程序名  |
+| `--format zip`    | 输出 ZIP 格式（默认） |
+| `--format tar.gz` | 输出 tar.gz 格式  |
+
+### `enm ci` — CI 配置
+
+| 参数/子命令                | 说明                                                                    |
+| --------------------- | --------------------------------------------------------------------- |
+| `init github`         | 创建 GitHub Actions 工作流                                                 |
+| `--project <路径>`      | 指定项目目录                                                                |
+| `--install-spec <地址>` | 必填，CI 中安装 ENM 的 pip 源地址，例如 `git+https://github.com/OWNER/enm.git@TAG` |
 
 每个命令都可以使用 `--help` 查看完整选项，例如：
 
@@ -309,14 +388,7 @@ enm sdk install --help
 
 ## 🧩 给开发者
 
-以下实现细节会影响兼容、扩展或排错：
 
-- 版本列表、下载地址和文件摘要来自 EUI-NEO GitHub Releases API，没有内置版本表。
-- SDK 按版本和平台分别保存在 ENM 状态目录中；可用 `ENM_HOME` 或全局参数 `--home` 更改位置。
-- 项目通过 `enm-project.json` 固定 EUI-NEO 版本，构建时使用该版本，而不是直接跟随当前激活版本。
-- 生成项目优先调用上游公开的 `find_package(EuiNeo)`、`eui::neo` 和 `eui_neo_configure_app()`；旧 SDK 则使用同版本上游源码中的兼容入口。
-- Windows ABI 检查会比较 SDK 与本机 MSVC 运行库实际包含的 `__std_*` 符号，不使用写死的 Visual Studio 最低版本；它是提前发现问题的辅助检查，不能证明所有二进制组合都兼容。
-- `enm configure` 和 `build` 最终调用 CMake；`enm test` 仅在项目自行登记测试后调用 CTest。额外参数可放在 `--` 后传递。
 
 从源码参与开发时可使用：
 
@@ -327,10 +399,10 @@ python -m unittest discover -s tests -v
 
 ## ⚠️ 当前状态
 
-- ENM 仍处于实验阶段，当前版本为 `0.1.0`
+- ENM 仍处于实验阶段，当前版本为 `0.2.0`
 - 主要在 Windows x64 上进行了实际验证
 - Linux 与 macOS 支持尚未经过同等程度的测试
-- 不会自动安装编译器、Visual Studio、CMake 或 Vulkan SDK
+- `enm doctor fix` 可尝试一键安装部分依赖（CMake、Ninja、Linux 系统库等），但编译器、Visual Studio、Vulkan SDK 等仍可能需要手动安装；加 `--yes` 自动确认必需依赖
 - 不会为发布包签名，也不会制作 MSI 等系统安装包
 - 上游预编译 SDK 仍可能与本机编译器不兼容，ENM 会尽量提前提示
 

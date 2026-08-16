@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .doctor import checks_as_dict, run_doctor
+from .doctor import checks_as_dict, fix_missing_dependencies, run_doctor
 from .github import ReleaseClient, ReleaseError, normalize_arch, normalize_platform, normalize_tag
 from .package import deploy, package_stage, remove_packaged_stage
 from .project import (
@@ -37,12 +37,11 @@ def _release_version(args: argparse.Namespace, store: StateStore) -> str:
         return ReleaseClient().get_release("latest").tag
 
 
-def cmd_doctor(args: argparse.Namespace) -> int:
-    checks = run_doctor(_store(args))
-    if args.json:
+def _print_checks(checks: list, *, json_output: bool = False) -> int:
+    if json_output:
         print(json.dumps(checks_as_dict(checks), indent=2))
     else:
-        symbols = {"ok": "OK", "optional": "--", "missing": "!!", "unsupported": "!!", "error": "!!"}
+        symbols = {"ok": "OK", "optional": "--", "missing": "!!", "unsupported": "!!", "error": "!!", "fixed": "++"}
         for check in checks:
             location = f" [{check.path}]" if check.path else ""
             symbol = symbols.get(check.status, "??")
@@ -53,8 +52,43 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 else None
             )
             rendered = color(f"{symbol:>2}", symbol_color) if symbol_color else f"{symbol:>2}"
-            print(f"{rendered} {check.name:<12} {check.detail}{location}")
-    return 1 if any(check.status in {"error", "unsupported"} for check in checks) else 0
+            required_marker = "" if check.required else " (optional)"
+            print(f"{rendered} {check.name:<18} {check.detail}{required_marker}{location}")
+    return 1 if any(check.status in {"error", "unsupported"} and check.required for check in checks) else 0
+
+
+def _doctor_run_and_print(args: argparse.Namespace) -> int:
+    checks = run_doctor(
+        _store(args),
+        project_root=Path(args.project) if getattr(args, "project", None) else None,
+        deep=args.deep,
+    )
+    return _print_checks(checks, json_output=args.json)
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    return _doctor_run_and_print(args)
+
+
+def cmd_doctor_fix(args: argparse.Namespace) -> int:
+    if args.yes and args.force:
+        print("error: --yes cannot be combined with --force to avoid accidental optional installs", file=sys.stderr)
+        return 2
+    checks = run_doctor(
+        _store(args),
+        project_root=Path(args.project) if getattr(args, "project", None) else None,
+        deep=args.deep,
+    )
+    checks = fix_missing_dependencies(checks, yes=args.yes, force=args.force)
+    # Re-run doctor to verify fixes if anything was marked fixed.
+    if any(check.status == "fixed" for check in checks):
+        print("\nRe-running doctor to verify fixes...")
+        checks = run_doctor(
+            _store(args),
+            project_root=Path(args.project) if getattr(args, "project", None) else None,
+            deep=args.deep,
+        )
+    return _print_checks(checks, json_output=getattr(args, "json", False))
 
 
 def cmd_sdk_list(args: argparse.Namespace) -> int:
@@ -255,7 +289,17 @@ def parser() -> argparse.ArgumentParser:
 
     doctor = commands.add_parser("doctor", help="inspect the local build environment")
     doctor.add_argument("--json", action="store_true")
+    doctor.add_argument("--project", help="project directory to infer backend requirements from")
+    doctor.add_argument("--deep", action="store_true", help="run a real CMake configure probe against the active SDK")
     doctor.set_defaults(func=cmd_doctor)
+
+    doctor_sub = doctor.add_subparsers(dest="doctor_command")
+    doctor_fix = doctor_sub.add_parser("fix", help="install missing dependencies")
+    doctor_fix.add_argument("--yes", action="store_true", help="auto-confirm required dependency installations")
+    doctor_fix.add_argument("--force", action="store_true", help="also offer to install optional dependencies (cannot be combined with --yes)")
+    doctor_fix.add_argument("--project", help="project directory to infer backend requirements from")
+    doctor_fix.add_argument("--deep", action="store_true", help="run a real CMake configure probe against the active SDK")
+    doctor_fix.set_defaults(func=cmd_doctor_fix)
 
     sdk = commands.add_parser("sdk", help="manage SDKs from GitHub Releases")
     sdk_commands = sdk.add_subparsers(dest="sdk_command", required=True)
