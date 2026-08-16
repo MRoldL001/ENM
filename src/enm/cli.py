@@ -104,7 +104,7 @@ def cmd_about(args: argparse.Namespace) -> int:
     )
     print(color(banner, CYAN))
     print()
-    print(f"ENM v{__version__} · maintained by MRoldL001 · MIT License")
+    print(color(f"ENM v{__version__} · maintained by MRoldL001 · MIT License", CYAN))
     print()
 
     done = threading.Event()

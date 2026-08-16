@@ -9,12 +9,11 @@ from typing import TextIO
 
 UTF8_CLOVER_FRAMES = (".", "·", "+", "✣", "✤", "✣", "+", "·")
 LEGACY_CLOVER_FRAMES = (".", "·", "+", "¤", "◆", "¤", "+", "·")
-BLUE = "\x1b[34m"
-BRIGHT_BLUE = "\x1b[94m"
-CYAN = "\x1b[36m"
-GREEN = "\x1b[32m"
-YELLOW = "\x1b[33m"
-RED = "\x1b[31m"
+BLUE = "\x1b[94m"
+CYAN = "\x1b[96m"
+GREEN = "\x1b[92m"
+YELLOW = "\x1b[93m"
+RED = "\x1b[91m"
 RESET = "\x1b[0m"
 
 
@@ -67,7 +66,7 @@ class Spinner:
     def _animate(self) -> None:
         index = 0
         while not self._stop.is_set():
-            frame = color(self.frames[index], BRIGHT_BLUE, self.stream)
+            frame = color(self.frames[index], BLUE, self.stream)
             self.stream.write(f"\r{frame} {self.message}")
             self.stream.flush()
             index = (index + 1) % len(self.frames)
