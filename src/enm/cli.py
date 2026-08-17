@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 import threading
@@ -8,7 +9,7 @@ import time
 from pathlib import Path
 
 from . import __version__
-from .doctor import checks_as_dict, fix_missing_dependencies, run_doctor
+from .doctor import Check, checks_as_dict, fix_missing_dependencies, run_doctor
 from .github import ReleaseClient, ReleaseError, normalize_arch, normalize_platform, normalize_tag
 from .package import deploy, package_stage, remove_packaged_stage
 from .project import (
@@ -22,6 +23,7 @@ from .project import (
     test,
 )
 from .state import StateStore
+from .toolchain import Compiler, compiler_meets_minimum, detect_compilers
 from .ui import CYAN, GREEN, RED, YELLOW, Spinner, color, level_label, yes_no
 
 
@@ -44,19 +46,36 @@ def _print_checks(checks: list, *, json_output: bool = False) -> int:
         print(json.dumps(checks_as_dict(checks), indent=2))
     else:
         symbols = {"ok": "OK", "optional": "--", "missing": "!!", "unsupported": "!!", "error": "!!", "fixed": "++"}
+        children_by_parent: dict[str, list] = {}
+        top_level = []
         for check in checks:
+            if getattr(check, "parent", None):
+                children_by_parent.setdefault(check.parent, []).append(check)
+            else:
+                top_level.append(check)
+
+        def _render_check(check, level: int = 0) -> None:
             location = f" [{check.path}]" if check.path else ""
             symbol = symbols.get(check.status, "??")
             symbol_color = (
-                GREEN if check.status == "ok"
+                GREEN if check.status in {"ok", "fixed"}
                 else RED if check.status in {"missing", "unsupported", "error"}
                 else YELLOW if symbol == "??"
                 else None
             )
             rendered = color(f"{symbol:>2}", symbol_color) if symbol_color else f"{symbol:>2}"
-            required_marker = "" if check.required else " (optional)"
-            print(f"{rendered} {check.name:<18} {check.detail}{required_marker}{location}")
-    return 1 if any(check.status in {"error", "unsupported"} and check.required for check in checks) else 0
+            required_marker = " (optional)" if not check.required and check.status != "unknown" else ""
+            prefix = "  " * level
+            print(f"{prefix}{rendered} {check.name:<18} {check.detail}{required_marker}{location}")
+            for child in children_by_parent.get(check.name, []):
+                _render_check(child, level=level + 1)
+
+        for check in top_level:
+            _render_check(check)
+    return 1 if any(
+        check.status in {"missing", "error", "unsupported"} and check.required
+        for check in checks
+    ) else 0
 
 
 def _doctor_run_and_print(args: argparse.Namespace) -> int:
@@ -76,21 +95,33 @@ def cmd_doctor_fix(args: argparse.Namespace) -> int:
     if args.yes and args.force:
         print("error: --yes cannot be combined with --force to avoid accidental optional installs", file=sys.stderr)
         return 2
+    json_output = getattr(args, "json", False)
+    if json_output and not args.yes:
+        print("error: doctor fix --json requires --yes because JSON mode cannot prompt interactively", file=sys.stderr)
+        return 2
     checks = run_doctor(
         _store(args),
         project_root=Path(args.project) if getattr(args, "project", None) else None,
         deep=args.deep,
     )
-    checks = fix_missing_dependencies(checks, yes=args.yes, force=args.force)
+    if json_output:
+        with contextlib.redirect_stdout(sys.stderr):
+            checks = fix_missing_dependencies(checks, yes=args.yes, force=args.force)
+    else:
+        checks = fix_missing_dependencies(checks, yes=args.yes, force=args.force)
+    fixed_names = {check.name for check in checks if check.status == "fixed"}
     # Re-run doctor to verify fixes if anything was marked fixed.
-    if any(check.status == "fixed" for check in checks):
-        print("\nRe-running doctor to verify fixes...")
+    if fixed_names:
+        print("\nRe-running doctor to verify fixes...", file=sys.stderr if json_output else sys.stdout)
         checks = run_doctor(
             _store(args),
             project_root=Path(args.project) if getattr(args, "project", None) else None,
             deep=args.deep,
         )
-    return _print_checks(checks, json_output=getattr(args, "json", False))
+        for index, check in enumerate(checks):
+            if check.name in fixed_names and check.status == "ok":
+                checks[index] = Check(check.name, "fixed", check.detail, check.path, check.required)
+    return _print_checks(checks, json_output=json_output)
 
 
 def cmd_about(args: argparse.Namespace) -> int:
@@ -119,6 +150,45 @@ def cmd_about(args: argparse.Namespace) -> int:
     with Spinner("Press Enter to continue..."):
         while not done.is_set():
             time.sleep(0.05)
+    return 0
+
+
+def cmd_lock_compiler(args: argparse.Namespace) -> int:
+    root = _project(args)
+    manifest = load_manifest(root)
+    compilers = [c for c in detect_compilers() if compiler_meets_minimum(c)]
+    if not compilers:
+        print("error: no supported compiler found (msvc, gcc, clang)", file=sys.stderr)
+        return 2
+    if len(compilers) == 1:
+        selected = compilers[0]
+    else:
+        print("Multiple compilers detected. Select one:")
+        for index, compiler in enumerate(compilers, 1):
+            version = ".".join(str(part) for part in compiler.version)
+            print(f"  {index}. {compiler.family} {version} ({compiler.path})")
+        selected = None
+        while selected is None:
+            try:
+                choice = int(input("Enter number: ")) - 1
+                if 0 <= choice < len(compilers):
+                    selected = compilers[choice]
+            except ValueError:
+                pass
+            if selected is None:
+                print("Invalid choice.")
+
+    manifest.setdefault("toolchain", {})
+    manifest["toolchain"]["compiler"] = selected.family
+    if len(selected.version) >= 2:
+        version_constraint = f"={selected.version[0]}.{selected.version[1]}"
+    elif len(selected.version) == 1:
+        version_constraint = f"={selected.version[0]}"
+    else:
+        version_constraint = ""
+    manifest["toolchain"]["version"] = version_constraint
+    (root / "enm-project.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    print(f"locked toolchain: {selected.family} {version_constraint}".strip())
     return 0
 
 
@@ -201,7 +271,12 @@ def cmd_sdk_install(args: argparse.Namespace) -> int:
             force=args.force,
             allow_unverified=args.allow_unverified,
         )
-    print(f"installed and activated {installed.version} at {installed.path}")
+    active = store.active(platform_name, arch)
+    if active.version == installed.version:
+        print(f"installed and activated {installed.version} at {installed.path}")
+    else:
+        print(f"installed {installed.version} at {installed.path}")
+        print(f"active SDK remains {active.version}; run 'enm sdk use {installed.version}' to switch")
     return 0
 
 
@@ -267,15 +342,15 @@ def _extra(args: argparse.Namespace) -> list[str]:
 
 
 def cmd_configure(args: argparse.Namespace) -> int:
-    return configure(_project(args), _store(args), _extra(args))
+    return configure(_project(args), _store(args), _extra(args), force=args.force)
 
 
 def cmd_build(args: argparse.Namespace) -> int:
-    return build(_project(args), _store(args), _extra(args))
+    return build(_project(args), _store(args), _extra(args), force=args.force)
 
 
 def cmd_test(args: argparse.Namespace) -> int:
-    return test(_project(args), _store(args), _extra(args))
+    return test(_project(args), _store(args), _extra(args), force=args.force)
 
 
 def cmd_deploy(args: argparse.Namespace) -> int:
@@ -321,7 +396,7 @@ def parser() -> argparse.ArgumentParser:
     doctor = commands.add_parser("doctor", help="inspect the local build environment")
     doctor.add_argument("--json", action="store_true")
     doctor.add_argument("--project", help="project directory to infer backend requirements from")
-    doctor.add_argument("--deep", action="store_true", help="run a real CMake configure probe against the active SDK")
+    doctor.add_argument("--deep", action="store_true", help="configure and link a real application against the active SDK")
     doctor.set_defaults(func=cmd_doctor)
 
     doctor_sub = doctor.add_subparsers(dest="doctor_command")
@@ -329,7 +404,8 @@ def parser() -> argparse.ArgumentParser:
     doctor_fix.add_argument("--yes", action="store_true", help="auto-confirm required dependency installations")
     doctor_fix.add_argument("--force", action="store_true", help="also offer to install optional dependencies (cannot be combined with --yes)")
     doctor_fix.add_argument("--project", help="project directory to infer backend requirements from")
-    doctor_fix.add_argument("--deep", action="store_true", help="run a real CMake configure probe against the active SDK")
+    doctor_fix.add_argument("--deep", action="store_true", help="configure and link a real application against the active SDK")
+    doctor_fix.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     doctor_fix.set_defaults(func=cmd_doctor_fix)
 
     sdk = commands.add_parser("sdk", help="manage SDKs from GitHub Releases")
@@ -374,6 +450,7 @@ def parser() -> argparse.ArgumentParser:
     ):
         command = commands.add_parser(name, help=help_text)
         command.add_argument("--project")
+        command.add_argument("--force", action="store_true", help="ignore toolchain and EUI SDK mismatch warnings")
         command.add_argument("extra", nargs=argparse.REMAINDER)
         command.set_defaults(func=function)
 
@@ -392,6 +469,10 @@ def parser() -> argparse.ArgumentParser:
 
     about_parser = commands.add_parser("about", help="show ENM banner, version, and credits")
     about_parser.set_defaults(func=cmd_about)
+
+    lock_compiler_parser = commands.add_parser("lock-compiler", help="lock the current compiler into the project manifest")
+    lock_compiler_parser.add_argument("--project", help="project directory")
+    lock_compiler_parser.set_defaults(func=cmd_lock_compiler)
 
     ci = commands.add_parser("ci", help="manage consumer CI")
     ci_commands = ci.add_subparsers(dest="ci_command", required=True)

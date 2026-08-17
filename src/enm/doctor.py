@@ -1,18 +1,32 @@
 from __future__ import annotations
 
 import os
+import locale
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
+import urllib.error
+import urllib.request
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .github import ReleaseError, normalize_arch, normalize_platform
-from .msvc import find_visual_studio
-from .project import load_manifest
+from .msvc import check_sdk_abi, find_visual_studio
+from .project import _legacy_source, has_configure_helper, load_manifest
 from .state import StateStore
-from .ui import Spinner
+from .toolchain import (
+    CLANG_MINIMUM,
+    Compiler,
+    GCC_MINIMUM,
+    MSVC_MINIMUM,
+    compiler_meets_minimum,
+    detect_compilers,
+    resolve_compiler,
+    resolve_toolchain_compiler,
+)
+from .ui import GREEN, RED, RESET, Spinner
 
 
 @dataclass
@@ -22,13 +36,11 @@ class Check:
     detail: str
     path: str | None = None
     required: bool = True
+    parent: str | None = None
 
 
 # EUI-NEO upstream requirements (from README and CMakeLists.txt)
 CMAKE_MINIMUM = (3, 14)
-MSVC_MINIMUM = (19, 29)  # Visual Studio 2019 16.11
-GCC_MINIMUM = (12, 0)
-CLANG_MINIMUM = (14, 0)
 VS_MINIMUM = (16, 11)  # Visual Studio 2019 16.11
 
 
@@ -48,6 +60,8 @@ def _probe(
             [executable, *args],
             capture_output=True,
             text=True,
+            encoding=locale.getpreferredencoding(False),
+            errors="replace",
             timeout=8,
             check=False,
         )
@@ -75,13 +89,29 @@ def _minimum_label(minimum: tuple[int, ...]) -> str:
     return ".".join(str(part) for part in minimum)
 
 
-def _tool_versions() -> tuple[Check, ...]:
-    return (
+def _tool_versions(project_root: Path | None = None) -> tuple[Check, ...]:
+    ninja_required = False
+    if project_root is not None and os.name == "nt":
+        try:
+            manifest = load_manifest(project_root)
+            toolchain = manifest.get("toolchain") or {}
+            compiler_family = toolchain.get("compiler")
+            if compiler_family and compiler_family != "msvc":
+                ninja_required = True
+        except ReleaseError:
+            pass
+
+    checks = [
         _probe("cmake", ["--version"], CMAKE_MINIMUM),
         _probe("ctest", ["--version"], CMAKE_MINIMUM),
-        _probe("ninja", ["--version"], missing_status="optional"),
-        _probe("xmake", ["--version"], missing_status="optional"),
-    )
+    ]
+    if ninja_required:
+        checks.append(_probe("ninja", ["--version"]))
+    elif project_root is None:
+        checks.append(_probe("ninja", ["--version"], missing_status="optional"))
+    if project_root is None:
+        checks.append(_probe("xmake", ["--version"], missing_status="optional"))
+    return tuple(checks)
 
 
 def _find_compiler() -> tuple[Path, str] | tuple[None, None]:
@@ -135,6 +165,8 @@ def _compiler_version(path: Path, family: str) -> tuple[tuple[int, ...] | None, 
             [str(path), *args],
             capture_output=True,
             text=True,
+            encoding=locale.getpreferredencoding(False),
+            errors="replace",
             timeout=8,
             check=False,
         )
@@ -196,6 +228,8 @@ def _cpp17_probe(path: Path, family: str, temp_root: Path | None = None, visual_
                 command,
                 capture_output=True,
                 text=True,
+                encoding=locale.getpreferredencoding(False),
+                errors="replace",
                 timeout=30,
                 check=False,
                 shell=shell,
@@ -208,12 +242,24 @@ def _cpp17_probe(path: Path, family: str, temp_root: Path | None = None, visual_
         return Check("c++17", "unsupported", detail, str(path))
 
 
-def _compiler_check(temp_root: Path | None = None, visual_studio=None) -> list[Check]:
+def _compiler_check(
+    temp_root: Path | None = None,
+    visual_studio=None,
+    project_root: Path | None = None,
+) -> list[Check]:
     # On Windows ENM uses the Visual Studio generator, so check MSVC even when
     # another compiler (e.g. MinGW) happens to be first on PATH.
     path: Path | None = None
     family: str | None = None
-    if os.name == "nt" and visual_studio:
+    if project_root is not None:
+        try:
+            manifest = load_manifest(project_root)
+            selected = resolve_toolchain_compiler(manifest)
+        except (ReleaseError, ValueError):
+            selected = None
+        if selected is not None:
+            path, family = selected.path, selected.family
+    if path is None and os.name == "nt" and visual_studio:
         path = _find_msvc_from_vs(visual_studio)
         if path:
             family = "msvc"
@@ -226,22 +272,147 @@ def _compiler_check(temp_root: Path | None = None, visual_studio=None) -> list[C
     version, detail = _compiler_version(path, family)
     minimum = _minimum_for_family(family)
     checks: list[Check] = []
-    if version and minimum:
-        if version[: len(minimum)] < minimum:
-            checks.append(
+    checks.append(_cpp17_probe(path, family, temp_root=temp_root, visual_studio=visual_studio))
+    return checks
+
+
+def _compiler_family_checks(selected: Compiler | None = None) -> list[Check]:
+    """Return a compiler inventory: one parent check plus one child per family."""
+    by_family: dict[str, Compiler] = {c.family: c for c in detect_compilers()}
+    children: list[Check] = []
+    for family in ("msvc", "gcc", "clang"):
+        compiler = by_family.get(family)
+        if compiler is None:
+            children.append(
                 Check(
-                    "compiler",
-                    "unsupported",
-                    f"{detail}; EUI-NEO requires {family} >= {_minimum_label(minimum)}",
-                    str(path),
+                    family,
+                    "missing",
+                    f"{family} compiler not found",
+                    required=False,
+                    parent="compiler",
+                )
+            )
+            continue
+        label = ".".join(str(part) for part in compiler.version)
+        if compiler_meets_minimum(compiler):
+            is_selected = bool(
+                selected
+                and selected.family == compiler.family
+                and selected.path.resolve() == compiler.path.resolve()
+            )
+            children.append(
+                Check(
+                    family,
+                    "ok",
+                    label,
+                    str(compiler.path),
+                    required=is_selected,
+                    parent="compiler",
                 )
             )
         else:
-            checks.append(Check("compiler", "ok", detail, str(path)))
+            minimums = {"msvc": MSVC_MINIMUM, "gcc": GCC_MINIMUM, "clang": CLANG_MINIMUM}
+            minimum = minimums[family]
+            children.append(
+                Check(
+                    family,
+                    "unsupported",
+                    f"{label} requires >= {_minimum_label(minimum)}",
+                    str(compiler.path),
+                    required=False,
+                    parent="compiler",
+                )
+            )
+
+    if any(c.status == "ok" for c in children):
+        parent_status = "ok"
+        parent_detail = (
+            f"selected compiler: {selected.family} {'.'.join(str(part) for part in selected.version)}"
+            if selected else "at least one supported compiler found"
+        )
+        # Once any compiler is usable, others are purely optional.
+        for c in children:
+            if c.status != "ok" and not c.required:
+                c.status = "optional"
+                c.detail = "not required because another compiler is available"
+    elif any(c.status == "unsupported" for c in children):
+        parent_status = "unsupported"
+        parent_detail = "no compiler meets the minimum version requirement"
     else:
-        checks.append(Check("compiler", "ok", detail, str(path)))
-    checks.append(_cpp17_probe(path, family, temp_root=temp_root, visual_studio=visual_studio))
-    return checks
+        parent_status = "missing"
+        parent_detail = "no supported compiler found"
+    parent = Check("compiler", parent_status, parent_detail, required=True)
+    return [parent, *children]
+
+
+
+def _toolchain_constraint_checks(project_root: Path) -> list[Check]:
+    """Validate that a compiler satisfying the manifest toolchain constraint is available."""
+    try:
+        manifest = load_manifest(project_root)
+    except ReleaseError:
+        return []
+    toolchain = manifest.get("toolchain") or {}
+    family = toolchain.get("compiler")
+    if not family:
+        return []
+
+    version_text = toolchain.get("version", "")
+    compiler = resolve_toolchain_compiler(manifest)
+    if compiler is not None:
+        current = ".".join(str(part) for part in compiler.version)
+        detail = f"{compiler.family} {current} matches the project constraint {version_text}".strip()
+        if os.name == "nt" and compiler.family != "msvc" and not shutil.which("ninja"):
+            return [
+                Check(
+                    "toolchain",
+                    "missing",
+                    f"{detail}, but Ninja is required for {compiler.family} builds on Windows",
+                    str(compiler.path),
+                    required=True,
+                )
+            ]
+        return [
+            Check(
+                "toolchain",
+                "ok",
+                detail,
+                str(compiler.path),
+                required=True,
+            )
+        ]
+
+    active = resolve_compiler()
+    if active is None:
+        return [
+            Check(
+                "toolchain",
+                "missing",
+                f"project requires {family} {version_text}".strip() + " but no compiler was found",
+                required=True,
+            )
+        ]
+    if active.family != family:
+        return [
+            Check(
+                "toolchain",
+                "unsupported",
+                f"project requires {family} {version_text}".strip() + f" but current compiler is {active.family}",
+                str(active.path),
+                required=True,
+            )
+        ]
+
+    current = ".".join(str(part) for part in active.version)
+    return [
+        Check(
+            "toolchain",
+            "unsupported",
+            f"project requires {family} {version_text} but current is {active.family} {current}",
+            str(active.path),
+            required=True,
+        )
+    ]
 
 
 def _visual_studio_check(vs=None) -> list[Check]:
@@ -285,6 +456,8 @@ def _pkg_config_exists(module: str) -> bool:
             [pkg_config, "--exists", module],
             capture_output=True,
             text=True,
+            encoding=locale.getpreferredencoding(False),
+            errors="replace",
             timeout=5,
             check=False,
         )
@@ -302,6 +475,8 @@ def _pkg_config_version(module: str) -> str | None:
             [pkg_config, "--modversion", module],
             capture_output=True,
             text=True,
+            encoding=locale.getpreferredencoding(False),
+            errors="replace",
             timeout=5,
             check=False,
         )
@@ -405,18 +580,14 @@ def _sdl2_check(required: bool) -> Check:
 
 
 def _network_check(fetch_mode: bool) -> Check:
-    # A lightweight check: can we reach GitHub?
     try:
-        request = subprocess.run(
-            ["python", "-c", "import urllib.request; urllib.request.urlopen('https://github.com', timeout=5)"],
-            capture_output=True,
-            text=True,
-            timeout=8,
-            check=False,
+        request = urllib.request.Request(
+            "https://github.com",
+            headers={"User-Agent": "enm-doctor"},
         )
-        if request.returncode == 0:
+        with urllib.request.urlopen(request, timeout=5):
             return Check("network", "ok", "can reach GitHub")
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, urllib.error.URLError, TimeoutError):
         pass
     status = "missing" if fetch_mode else "optional"
     return Check("network", status, "cannot reach github.com; required when EUI_DEPS_MODE=fetch or legacy source download is needed", required=fetch_mode)
@@ -514,6 +685,7 @@ def _detect_backends(project_root: Path | None) -> tuple[str, str, bool]:
 def _sdk_check(store: StateStore, project_root: Path | None, deep: bool, temp_root: Path | None = None) -> list[Check]:
     checks: list[Check] = []
     sdk = None
+    manifest = None
     if project_root:
         try:
             manifest = load_manifest(project_root)
@@ -571,7 +743,7 @@ def _sdk_check(store: StateStore, project_root: Path | None, deep: bool, temp_ro
         detail_parts.append("library missing")
 
     # Verify exported entry point
-    has_configure_helper = False
+    configure_helper_available = False
     has_eui_neo_target = False
     for cmake_file in sdk.path.rglob("*.cmake"):
         try:
@@ -579,28 +751,76 @@ def _sdk_check(store: StateStore, project_root: Path | None, deep: bool, temp_ro
         except OSError:
             continue
         if re.search(r"(?:function|macro)\s*\(\s*eui_neo_configure_app\b", content, re.IGNORECASE):
-            has_configure_helper = True
+            configure_helper_available = True
         if "eui::neo" in content:
             has_eui_neo_target = True
-    if has_configure_helper:
+    if configure_helper_available:
         detail_parts.append("eui_neo_configure_app() available")
     elif has_eui_neo_target:
         detail_parts.append("eui::neo target available")
     else:
         detail_parts.append("no supported entry point")
 
-    status = "ok" if (header and library and (has_configure_helper or has_eui_neo_target)) else "error"
+    status = "ok" if (header and library and (configure_helper_available or has_eui_neo_target)) else "error"
     checks.append(Check("eui-sdk", status, "; ".join(detail_parts), str(sdk.path)))
 
+    if sdk.platform == "windows" and status == "ok":
+        abi = check_sdk_abi(sdk)
+        checks.append(
+            Check(
+                "msvc-sdk-abi",
+                abi.status,
+                abi.detail,
+                str(sdk.path),
+                required=abi.status not in {"optional", "unknown"},
+            )
+        )
+
     if deep and status == "ok":
-        checks.append(_deep_sdk_probe(sdk, config, temp_root=temp_root))
+        compiler = (resolve_toolchain_compiler(manifest) if manifest else None) or resolve_compiler()
+        legacy_source = None
+        if not configure_helper_available:
+            try:
+                legacy_source = _legacy_source(store, sdk.version)
+            except ReleaseError as exc:
+                checks.append(Check("sdk-toolchain", "error", str(exc), str(sdk.path)))
+                return checks
+        checks.append(
+            _deep_sdk_probe(
+                sdk,
+                config,
+                compiler=compiler,
+                temp_root=temp_root,
+                legacy_source=legacy_source,
+            )
+        )
 
     return checks
 
 
-def _deep_sdk_probe(sdk, config: Path, temp_root: Path | None = None) -> Check:
-    """Configure a minimal CMake project against the SDK to verify real compatibility."""
+def _deep_sdk_probe(
+    sdk,
+    config: Path,
+    compiler: Compiler | None = None,
+    temp_root: Path | None = None,
+    legacy_source: Path | None = None,
+) -> Check:
+    """Configure and link a minimal application against the SDK."""
     with tempfile.TemporaryDirectory(prefix="enm-doctor-sdk-", dir=temp_root) as directory:
+        environment = os.environ.copy()
+        if os.name == "nt":
+            path_value = next((value for key, value in environment.items() if key.lower() == "path"), "")
+            environment = {key: value for key, value in environment.items() if key.lower() != "path"}
+            environment["Path"] = path_value
+
+        def failure_excerpt(output: str, fallback: str) -> str:
+            lines = [line.strip() for line in output.splitlines() if line.strip()]
+            index = next(
+                (i for i, line in enumerate(lines) if "error" in line.lower() or "fatal" in line.lower()),
+                max(0, len(lines) - 1),
+            )
+            return " | ".join(lines[index:index + 4]) if lines else fallback
+
         root = Path(directory)
         (root / "probe.cpp").write_text(
             '#include "eui_neo.h"\n'
@@ -616,6 +836,19 @@ def _deep_sdk_probe(sdk, config: Path, temp_root: Path | None = None) -> Check:
             "} // namespace app\n",
             encoding="utf-8",
         )
+        legacy_cmake = ""
+        if legacy_source is not None:
+            source = legacy_source.as_posix()
+            legacy_cmake = (
+                f'    set(_enm_legacy_source "{source}")\n'
+                '    get_target_property(_enm_defs eui::neo INTERFACE_COMPILE_DEFINITIONS)\n'
+                '    set(_enm_entry "${_enm_legacy_source}/core/app/glfw_app_main.cpp")\n'
+                '    if("${_enm_defs}" MATCHES "EUI_WINDOW_BACKEND_SDL2")\n'
+                '        set(_enm_entry "${_enm_legacy_source}/core/app/sdl2_app_main.cpp")\n'
+                '    endif()\n'
+                '    target_sources(probe PRIVATE "${_enm_entry}")\n'
+                '    target_include_directories(probe PRIVATE "${_enm_legacy_source}")\n'
+            )
         (root / "CMakeLists.txt").write_text(
             "cmake_minimum_required(VERSION 3.14)\n"
             "project(enm_doctor_probe LANGUAGES C CXX)\n"
@@ -626,31 +859,77 @@ def _deep_sdk_probe(sdk, config: Path, temp_root: Path | None = None) -> Check:
             "if(COMMAND eui_neo_configure_app)\n"
             "    eui_neo_configure_app(probe)\n"
             "else()\n"
+            + legacy_cmake +
             "    target_link_libraries(probe PRIVATE eui::neo)\n"
             "endif()\n",
             encoding="utf-8",
         )
         build_dir = root / "build"
-        command = ["cmake", "-S", str(root), "-B", str(build_dir), f"-DCMAKE_PREFIX_PATH={sdk.path.as_posix()}"]
-        if os.name == "nt":
+        command = [
+            "cmake",
+            "-S", str(root),
+            "-B", str(build_dir),
+            f"-DCMAKE_PREFIX_PATH={sdk.path.as_posix()}",
+        ]
+        if compiler is not None and not (os.name == "nt" and compiler.family == "msvc"):
+            command.append(f"-DCMAKE_CXX_COMPILER={compiler.path.as_posix()}")
+
+        is_windows = os.name == "nt"
+        use_msvc_generator = is_windows and compiler is not None and compiler.family == "msvc"
+        if use_msvc_generator:
             command.extend(["-G", "Visual Studio 17 2022", "-A", "x64"])
+            vs = find_visual_studio()
+            if vs is not None:
+                command.append(f"-DCMAKE_GENERATOR_INSTANCE={vs.path.as_posix()}")
+        elif compiler is not None and compiler.family != "msvc" and is_windows:
+            if shutil.which("ninja"):
+                command.extend(["-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release"])
+            else:
+                return Check(
+                    "sdk-toolchain",
+                    "error",
+                    "non-MSVC toolchain selected on Windows requires Ninja; install Ninja or switch to msvc",
+                    str(sdk.path),
+                )
         else:
             command.append("-DCMAKE_BUILD_TYPE=Release")
+
         try:
             result = subprocess.run(
                 command,
                 capture_output=True,
                 text=True,
+                encoding=locale.getpreferredencoding(False),
+                errors="replace",
                 timeout=120,
                 check=False,
+                env=environment,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return Check("sdk-toolchain", "error", f"deep probe failed: {exc}", str(sdk.path))
-        if result.returncode == 0:
-            return Check("sdk-toolchain", "ok", "SDK can be configured with the current toolchain", str(sdk.path))
-        output = (result.stderr or result.stdout or "").strip()
-        first_error = next((line for line in output.splitlines() if "error" in line.lower() or "fatal" in line.lower()), output.splitlines()[0] if output else "configuration failed")
-        return Check("sdk-toolchain", "unsupported", first_error, str(sdk.path))
+        if result.returncode != 0:
+            output = (result.stderr or result.stdout or "").strip()
+            return Check("sdk-toolchain", "unsupported", f"configure failed: {failure_excerpt(output, 'configuration failed')}", str(sdk.path))
+
+        build_command = ["cmake", "--build", str(build_dir), "--config", "Release"]
+        try:
+            build_result = subprocess.run(
+                build_command,
+                capture_output=True,
+                text=True,
+                encoding=locale.getpreferredencoding(False),
+                errors="replace",
+                timeout=180,
+                check=False,
+                env=environment,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return Check("sdk-toolchain", "error", f"deep build probe failed: {exc}", str(sdk.path))
+        if build_result.returncode != 0:
+            output = (build_result.stderr or build_result.stdout or "").strip()
+            return Check("sdk-toolchain", "unsupported", f"build/link failed: {failure_excerpt(output, 'build failed')}", str(sdk.path))
+        compiler_detail = f"with {compiler.family} {'.'.join(str(p) for p in compiler.version)}" if compiler else "with the current toolchain"
+        return Check("sdk-toolchain", "ok", f"SDK application configured and linked {compiler_detail}", str(sdk.path))
 
 
 def run_doctor(
@@ -659,14 +938,16 @@ def run_doctor(
     deep: bool = False,
     temp_root: Path | None = None,
 ) -> list[Check]:
-    # Use a project-local temp directory when a project is provided so that
-    # ephemeral doctor probes do not scatter files outside the workspace.
-    if project_root and not temp_root:
-        temp_root = project_root / ".enm-doctor-tmp"
-        temp_root.mkdir(exist_ok=True)
+    manifest = None
+    if project_root:
+        try:
+            manifest = load_manifest(project_root)
+        except ReleaseError:
+            pass
+    selected_compiler = (resolve_toolchain_compiler(manifest) if manifest else None) or resolve_compiler()
     checks: list[Check] = []
     with Spinner("Checking build tools"):
-        checks.extend(_tool_versions())
+        checks.extend(_tool_versions(project_root))
     if os.name == "nt":
         with Spinner("Checking Visual Studio"):
             visual_studio = find_visual_studio()
@@ -674,31 +955,53 @@ def run_doctor(
     else:
         visual_studio = None
     with Spinner("Checking compiler"):
-        checks.extend(_compiler_check(temp_root=temp_root, visual_studio=visual_studio))
+        checks.extend(
+            _compiler_check(
+                temp_root=temp_root,
+                visual_studio=visual_studio,
+                project_root=project_root,
+            )
+        )
+        checks.extend(_compiler_family_checks(selected_compiler))
+    if project_root:
+        with Spinner("Checking toolchain constraint"):
+            checks.extend(_toolchain_constraint_checks(project_root))
     with Spinner("Checking system dependencies"):
         checks.extend(_linux_system_deps())
         checks.append(_opengl_check())
 
     window_backend, render_backend, fetch_mode = _detect_backends(project_root)
     checks.append(
-        Check("window-backend", "ok", f"detected window backend: {window_backend}", required=False)
+        Check("window-backend", "ok", f"detected window backend: {window_backend}")
     )
     checks.append(
-        Check("render-backend", "ok", f"detected render backend: {render_backend}", required=False)
+        Check("render-backend", "ok", f"detected render backend: {render_backend}")
     )
 
     if window_backend == "sdl2":
         checks.append(_sdl2_check(required=True))
-    else:
-        # GLFW is bundled in the SDK source, but for source builds it may need fetching
+    elif project_root is None:
         checks.append(_sdl2_check(required=False))
 
     if render_backend == "vulkan":
         checks.append(_vulkan_check(required=True))
-    else:
+    elif project_root is None:
         checks.append(_vulkan_check(required=False))
 
-    checks.append(_network_check(fetch_mode))
+    network_required = fetch_mode
+    try:
+        if manifest:
+            version = manifest.get("eui", {}).get("version")
+            sdk = store.get_installed(version, normalize_platform(), normalize_arch()) if version else None
+        else:
+            sdk = store.active()
+        if sdk and not has_configure_helper(sdk):
+            cached_entry = store.sources_dir / sdk.version / "core/app/glfw_app_main.cpp"
+            network_required = network_required or not cached_entry.is_file()
+    except ReleaseError:
+        pass
+    if network_required:
+        checks.append(_network_check(True))
     sdk_message = "Checking SDK and toolchain compatibility" if deep else "Checking SDK"
     with Spinner(sdk_message):
         checks.extend(_sdk_check(store, project_root, deep, temp_root=temp_root))
@@ -762,9 +1065,11 @@ def _install_command(check: Check, package_manager: str | None) -> tuple[list[st
 
     name = check.name
 
-    # EUI-NEO SDK: handled separately via ENM itself.
+    # EUI-NEO SDK: install the exact pinned version via ENM itself.
     if name == "eui-sdk":
-        return None, "run 'enm sdk install latest' to install the SDK"
+        match = re.search(r"EUI-NEO\s+(v[^\s(]+)", check.detail)
+        version = match.group(1) if match else "latest"
+        return [sys.executable, "-m", "enm", "sdk", "install", version], f"install EUI-NEO {version}"
 
     # Visual Studio on Windows: winget can install BuildTools but it usually
     # requires administrator privileges and a reboot; provide the command.
@@ -893,6 +1198,73 @@ def _prompt(question: str) -> bool:
     return answer in {"y", "yes"}
 
 
+def _print_compiler_install_help(family: str, package_manager: str | None) -> None:
+    """Print installation instructions for a missing compiler family."""
+    if family == "msvc":
+        print("MSVC must be installed manually. Download Visual Studio Build Tools from:")
+        print("  https://visualstudio.microsoft.com/downloads/")
+        return
+
+    if family == "gcc":
+        print("Install a matching GCC version, for example:")
+        commands = {
+            "apt": "sudo apt install g++",
+            "brew": "brew install gcc",
+            "winget": "winget install GnuWin32.GCC",
+            "dnf": "sudo dnf install gcc-c++",
+            "yum": "sudo yum install gcc-c++",
+            "pacman": "sudo pacman -S gcc",
+        }
+    elif family == "clang":
+        print("Install a matching Clang version, for example:")
+        commands = {
+            "apt": "sudo apt install clang",
+            "brew": "brew install llvm",
+            "winget": "winget install LLVM.LLVM",
+            "dnf": "sudo dnf install clang",
+            "yum": "sudo yum install clang",
+            "pacman": "sudo pacman -S clang",
+        }
+    else:
+        print(f"Install a matching {family} compiler using your system package manager.")
+        return
+
+    command = commands.get(package_manager)
+    if command:
+        print(f"  {command}")
+    else:
+        print(f"  install {family}++ using your system package manager")
+
+
+def _toolchain_fix_guidance(check: Check, package_manager: str | None) -> None:
+    """Print remediation guidance for a toolchain constraint mismatch."""
+    detail = check.detail.lower()
+
+    required_match = re.search(r"requires\s+(\w+)", detail)
+    required = required_match.group(1) if required_match else None
+
+    current_match = re.search(r"current\s+(?:compiler\s+)?is\s+(\w+)", detail)
+    current = current_match.group(1) if current_match else None
+
+    if required is None:
+        print(f"Toolchain constraint not satisfied: {check.detail}")
+        print("Alternatively, run 'enm lock-compiler' to update the manifest or 'enm configure --force' to ignore the constraint.")
+        return
+
+    if "no compiler was found" in detail:
+        print(f"Toolchain constraint requires {required.upper()} but no matching compiler was found.")
+        _print_compiler_install_help(required, package_manager)
+    elif current and current != required:
+        print(f"Project requires {required.upper()} but the active compiler is {current.upper()}.")
+        print(f"Run 'enm lock-compiler' to switch this project to {current.upper()}, or run 'enm configure --force' to ignore the constraint.")
+        return
+    else:
+        print(f"Toolchain constraint not satisfied: {check.detail}")
+        _print_compiler_install_help(required, package_manager)
+
+    print("Alternatively, run 'enm lock-compiler' to update the manifest or 'enm configure --force' to ignore the constraint.")
+
+
 def fix_missing_dependencies(checks: list[Check], *, yes: bool = False, force: bool = False) -> list[Check]:
     """Interactively offer to install missing/unsupported dependencies.
 
@@ -904,6 +1276,11 @@ def fix_missing_dependencies(checks: list[Check], *, yes: bool = False, force: b
     """
     package_manager = _detect_package_manager()
     approved_apt: list[tuple[int, Check, list[str], str]] = []
+
+    # Toolchain constraints need guidance rather than automated installation.
+    for check in checks:
+        if check.name == "toolchain" and check.status in {"missing", "unsupported"}:
+            _toolchain_fix_guidance(check, package_manager)
 
     def _prompt_install_check(check: Check, index: int, auto: bool) -> None:
         command, description = _install_command(check, package_manager)
@@ -917,13 +1294,13 @@ def fix_missing_dependencies(checks: list[Check], *, yes: bool = False, force: b
         if package_manager == "apt" and len(command) >= 4 and command[:4] == ["sudo", "apt", "install", "-y"]:
             approved_apt.append((index, check, command[4:], description))
             return
-        print(f"  Installing {check.name}: {description}")
-        success, detail = _run_install_command(command)
+        with Spinner(f"Installing {check.name}: {description}"):
+            success, detail = _run_install_command(command)
         if success:
-            print(f"    ok: {detail}")
+            print(f"  {GREEN}ok{RESET}: {check.name} {detail}" if sys.stderr.isatty() else f"  ok: {check.name} {detail}")
             checks[index] = Check(check.name, "fixed", f"installed: {description}", check.path, check.required)
         else:
-            print(f"    failed: {detail}")
+            print(f"  {RED}failed{RESET}: {check.name} {detail}" if sys.stderr.isatty() else f"  failed: {check.name} {detail}")
 
     # 1) Required items: auto-install with --yes, otherwise prompt one by one.
     for index, check in enumerate(checks):
@@ -942,15 +1319,16 @@ def fix_missing_dependencies(checks: list[Check], *, yes: bool = False, force: b
         for _index, _check, pkgs, _description in approved_apt:
             packages.extend(pkgs)
         packages = list(dict.fromkeys(packages))
-        print(f"\nInstalling approved packages via apt: {' '.join(packages)}")
         subprocess.run(["sudo", "apt", "update"], check=False, timeout=120)
-        success, detail = _run_install_command(["sudo", "apt", "install", "-y", *packages])
+        message = f"Installing approved packages via apt: {' '.join(packages)}"
+        with Spinner(message):
+            success, detail = _run_install_command(["sudo", "apt", "install", "-y", *packages])
         if success:
-            print(f"  ok: {detail}")
+            print(f"  {GREEN}ok{RESET}: {message} {detail}" if sys.stderr.isatty() else f"  ok: {message} {detail}")
             for index, _check, _pkgs, description in approved_apt:
                 checks[index] = Check(_check.name, "fixed", f"installed: {description}", _check.path, _check.required)
         else:
-            print(f"  failed: {detail}")
+            print(f"  {RED}failed{RESET}: {message} {detail}" if sys.stderr.isatty() else f"  failed: {message} {detail}")
 
     return checks
 

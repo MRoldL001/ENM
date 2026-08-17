@@ -45,6 +45,62 @@ class StateTests(unittest.TestCase):
             self.assertNotIn("v1.2.3", state["installed"])
             self.assertNotIn("windows-x64", state["active"])
 
+    def test_install_does_not_change_existing_active_sdk(self):
+        from unittest import mock
+        from enm.github import Asset, Release
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = self._store_with_sdk(Path(directory))
+            release = Release(
+                tag="v9.9.9",
+                name="v9.9.9",
+                published_at="2026-01-01T00:00:00Z",
+                prerelease=False,
+                assets=(Asset("eui-neo-windows-x64-sdk.zip", "", 0, None),),
+                page_url="",
+            )
+
+            def _fake_extract(archive: Path, destination: Path) -> None:
+                config = destination / "EuiNeoConfig.cmake"
+                config.parent.mkdir(parents=True, exist_ok=True)
+                config.write_text("", encoding="utf-8")
+
+            with mock.patch("enm.state.download_asset"):
+                with mock.patch("enm.state.verify_digest", return_value="sha256"):
+                    with mock.patch("enm.state.extract_archive", side_effect=_fake_extract):
+                        installed = store.install(release, "windows", "x64")
+            self.assertEqual(installed.version, "v9.9.9")
+            state = store.load()
+            self.assertEqual(state["active"]["windows-x64"], "v1.2.3")
+
+    def test_install_activates_when_no_active_sdk(self):
+        from unittest import mock
+        from enm.github import Asset, Release
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = StateStore(Path(directory))
+            release = Release(
+                tag="v9.9.9",
+                name="v9.9.9",
+                published_at="2026-01-01T00:00:00Z",
+                prerelease=False,
+                assets=(Asset("eui-neo-windows-x64-sdk.zip", "", 0, None),),
+                page_url="",
+            )
+
+            def _fake_extract(archive: Path, destination: Path) -> None:
+                config = destination / "EuiNeoConfig.cmake"
+                config.parent.mkdir(parents=True, exist_ok=True)
+                config.write_text("", encoding="utf-8")
+
+            with mock.patch("enm.state.download_asset"):
+                with mock.patch("enm.state.verify_digest", return_value="sha256"):
+                    with mock.patch("enm.state.extract_archive", side_effect=_fake_extract):
+                        installed = store.install(release, "windows", "x64")
+            self.assertEqual(installed.version, "v9.9.9")
+            state = store.load()
+            self.assertEqual(state["active"]["windows-x64"], "v9.9.9")
+
 
 if __name__ == "__main__":
     unittest.main()

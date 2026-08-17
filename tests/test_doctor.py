@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 from collections import namedtuple
@@ -15,10 +16,12 @@ from enm.doctor import (
     Check,
     _apt_packages,
     _compiler_family,
+    _compiler_family_checks,
     _compiler_version,
     _cpp17_probe,
     _detect_backends,
     _detect_package_manager,
+    _deep_sdk_probe,
     _find_compiler,
     _install_command,
     _linux_system_deps,
@@ -29,11 +32,15 @@ from enm.doctor import (
     _run_install_command,
     _sdl2_check,
     _sdk_check,
+    _tool_versions,
+    _toolchain_constraint_checks,
     _vulkan_check,
     fix_missing_dependencies,
     run_doctor,
 )
 from enm.state import InstalledSdk, StateStore
+from enm.msvc import AbiResult
+from enm.toolchain import Compiler
 
 
 class DoctorProbeTests(unittest.TestCase):
@@ -83,7 +90,156 @@ class DoctorProbeTests(unittest.TestCase):
         self.assertEqual(check.status, "unsupported")
 
 
+class DoctorCompilerFamilyTests(unittest.TestCase):
+    def test_family_checks_return_parent_and_children(self):
+        from enm.toolchain import Compiler
+
+        compilers = [
+            Compiler(Path("/usr/bin/cl"), "msvc", (19, 44), "cl"),
+            Compiler(Path("/usr/bin/g++"), "gcc", (13, 2), "g++"),
+        ]
+        with mock.patch("enm.doctor.detect_compilers", return_value=compilers):
+            checks = _compiler_family_checks()
+        names = {c.name: c for c in checks}
+        self.assertIn("compiler", names)
+        self.assertEqual(names["compiler"].status, "ok")
+        self.assertEqual(names["msvc"].status, "ok")
+        self.assertEqual(names["gcc"].status, "ok")
+        self.assertEqual(names["clang"].status, "optional")
+        self.assertEqual(names["msvc"].parent, "compiler")
+
+    def test_family_checks_report_unsupported_version(self):
+        from enm.toolchain import Compiler
+
+        compilers = [Compiler(Path("/usr/bin/g++"), "gcc", (11, 0), "g++")]
+        with mock.patch("enm.doctor.detect_compilers", return_value=compilers):
+            checks = _compiler_family_checks()
+        gcc_check = next(c for c in checks if c.name == "gcc")
+        self.assertEqual(gcc_check.status, "unsupported")
+        parent = next(c for c in checks if c.name == "compiler")
+        self.assertEqual(parent.status, "unsupported")
+
+
+class DoctorToolchainConstraintTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write_manifest(self, toolchain=None):
+        manifest = {
+            "schema": 2,
+            "name": "App",
+            "version": "0.1.0",
+            "target": "App",
+            "eui": {"version": "v0.5.6"},
+            "build_dir": "build/default",
+            "toolchain": toolchain or {},
+        }
+        (self.tmp / "enm-project.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+    def test_no_constraint_returns_empty(self):
+        self._write_manifest()
+        self.assertEqual(_toolchain_constraint_checks(self.tmp), [])
+
+    def test_matching_constraint_returns_ok(self):
+        from enm.toolchain import Compiler
+
+        self._write_manifest({"compiler": "gcc", "version": ">=12"})
+        current = Compiler(Path("/usr/bin/g++"), "gcc", (13, 2), "g++")
+        with mock.patch("enm.toolchain.resolve_compiler", return_value=current):
+            with mock.patch("enm.toolchain.detect_compilers", return_value=[current]):
+                with mock.patch("os.name", "posix"):
+                    checks = _toolchain_constraint_checks(self.tmp)
+        self.assertEqual(len(checks), 1)
+        self.assertEqual(checks[0].status, "ok")
+
+    def test_family_mismatch_returns_unsupported(self):
+        from enm.toolchain import Compiler
+
+        self._write_manifest({"compiler": "msvc", "version": ">=19.44"})
+        current = Compiler(Path("/usr/bin/g++"), "gcc", (13, 2), "g++")
+        with mock.patch("enm.toolchain.resolve_compiler", return_value=current):
+            with mock.patch("enm.toolchain.detect_compilers", return_value=[current]):
+                checks = _toolchain_constraint_checks(self.tmp)
+        self.assertEqual(len(checks), 1)
+        self.assertEqual(checks[0].status, "unsupported")
+        self.assertIn("msvc", checks[0].detail)
+
+    def test_version_mismatch_returns_unsupported(self):
+        from enm.toolchain import Compiler
+
+        self._write_manifest({"compiler": "gcc", "version": ">=14"})
+        current = Compiler(Path("/usr/bin/g++"), "gcc", (13, 2), "g++")
+        with mock.patch("enm.toolchain.resolve_compiler", return_value=current):
+            with mock.patch("enm.toolchain.detect_compilers", return_value=[current]):
+                checks = _toolchain_constraint_checks(self.tmp)
+        self.assertEqual(len(checks), 1)
+        self.assertEqual(checks[0].status, "unsupported")
+
+    def test_missing_compiler_returns_missing(self):
+        self._write_manifest({"compiler": "gcc", "version": ">=12"})
+        with mock.patch("enm.toolchain.resolve_compiler", return_value=None):
+            with mock.patch("enm.toolchain.detect_compilers", return_value=[]):
+                checks = _toolchain_constraint_checks(self.tmp)
+        self.assertEqual(len(checks), 1)
+        self.assertEqual(checks[0].status, "missing")
+
+    def test_required_compiler_found_even_when_not_active(self):
+        from enm.toolchain import Compiler
+
+        self._write_manifest({"compiler": "clang"})
+        current = Compiler(Path("C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe"), "msvc", (19, 44), "cl")
+        clang = Compiler(Path("C:/Program Files/LLVM/bin/clang++.exe"), "clang", (19, 1), "clang++")
+        with mock.patch("enm.toolchain.resolve_compiler", return_value=current):
+            with mock.patch("enm.toolchain.detect_compilers", return_value=[current, clang]):
+                with mock.patch("shutil.which", return_value="C:/ninja/ninja.exe"):
+                    checks = _toolchain_constraint_checks(self.tmp)
+        self.assertEqual(len(checks), 1)
+        self.assertEqual(checks[0].status, "ok")
+        self.assertIn("clang", checks[0].detail)
+
+
 class DoctorDependencyTests(unittest.TestCase):
+    def test_ninja_required_for_non_msvc_toolchain_on_windows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = {
+                "schema": 2,
+                "name": "App",
+                "version": "0.1.0",
+                "target": "App",
+                "eui": {"version": "v0.5.6"},
+                "build_dir": "build/default",
+                "toolchain": {"compiler": "clang"},
+            }
+            (root / "enm-project.json").write_text(json.dumps(manifest), encoding="utf-8")
+            with mock.patch("os.name", "nt"):
+                with mock.patch("shutil.which", return_value=None):
+                    checks = _tool_versions(root)
+        ninja = next(check for check in checks if check.name == "ninja")
+        self.assertEqual(ninja.status, "missing")
+        self.assertTrue(ninja.required)
+
+    def test_ninja_optional_for_msvc_toolchain_on_windows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = {
+                "schema": 2,
+                "name": "App",
+                "version": "0.1.0",
+                "target": "App",
+                "eui": {"version": "v0.5.6"},
+                "build_dir": "build/default",
+                "toolchain": {"compiler": "msvc"},
+            }
+            (root / "enm-project.json").write_text(json.dumps(manifest), encoding="utf-8")
+            with mock.patch("os.name", "nt"):
+                with mock.patch("shutil.which", return_value=None):
+                    checks = _tool_versions(root)
+        self.assertFalse(any(check.name == "ninja" for check in checks))
+
     def test_opengl_on_windows_is_ok(self):
         with mock.patch("os.name", "nt"):
             check = _opengl_check()
@@ -160,6 +316,25 @@ class DoctorSdkTests(unittest.TestCase):
             self.assertIn("headers present", sdk_check.detail)
             self.assertIn("eui_neo_configure_app() available", sdk_check.detail)
 
+    def test_sdk_check_reports_incompatible_msvc_abi(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = self._fake_store(Path(directory))
+            abi = AbiResult("unsupported", "required STL symbols are unavailable")
+            with mock.patch("enm.doctor.check_sdk_abi", return_value=abi):
+                checks = _sdk_check(store, None, deep=False)
+        check = next(check for check in checks if check.name == "msvc-sdk-abi")
+        self.assertEqual(check.status, "unsupported")
+        self.assertTrue(check.required)
+
+    def test_sdk_check_reports_uninspectable_abi_as_unknown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = self._fake_store(Path(directory))
+            with mock.patch("enm.doctor.check_sdk_abi", return_value=AbiResult("unknown", "cannot inspect")):
+                checks = _sdk_check(store, None, deep=False)
+        check = next(check for check in checks if check.name == "msvc-sdk-abi")
+        self.assertEqual(check.status, "unknown")
+        self.assertFalse(check.required)
+
     def test_sdk_check_fails_without_entry_point(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -209,6 +384,51 @@ class DoctorSdkTests(unittest.TestCase):
             self.assertIn("v99.99.99", sdk_check.detail)
             self.assertTrue(sdk_check.required)
 
+    def test_deep_probe_uses_locked_toolchain(self):
+        from unittest import mock
+        from enm.toolchain import Compiler
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = self._fake_store(root)
+            manifest = {
+                "schema": 2,
+                "name": "test",
+                "version": "0.1.0",
+                "target": "test",
+                "eui": {"version": "v9.8.7"},
+                "build_dir": "build/default",
+                "toolchain": {"compiler": "clang", "version": ""},
+            }
+            (root / "enm-project.json").write_text(json.dumps(manifest), encoding="utf-8")
+            msvc = Compiler(Path("C:/msvc/cl.exe"), "msvc", (19, 44), "cl")
+            clang = Compiler(Path("C:/llvm/clang++.exe"), "clang", (19, 1), "clang++")
+            with mock.patch("enm.toolchain.resolve_compiler", return_value=msvc):
+                with mock.patch("enm.toolchain.detect_compilers", return_value=[msvc, clang]):
+                    with mock.patch("enm.doctor.check_sdk_abi", return_value=AbiResult("ok", "compatible")):
+                        with mock.patch("shutil.which", return_value="C:/ninja/ninja.exe"):
+                            with mock.patch("os.name", "nt"):
+                                with mock.patch("subprocess.run", return_value=mock.MagicMock(returncode=0, stdout="", stderr="")) as run_mock:
+                                    checks = _sdk_check(store, root, deep=True)
+            probe = next(check for check in checks if check.name == "sdk-toolchain")
+            self.assertEqual(probe.status, "ok")
+            command = run_mock.call_args_list[0].args[0]
+            self.assertIn("-DCMAKE_CXX_COMPILER=C:/llvm/clang++.exe", command)
+            self.assertIn("Ninja", command)
+
+    def test_deep_probe_reports_link_failure(self):
+        sdk = InstalledSdk("v0.5.6", "windows", "x64", Path("C:/sdk"), "sdk.zip", "abc")
+        compiler = Compiler(Path("C:/msvc/cl.exe"), "msvc", (19, 44), "cl")
+        configured = mock.MagicMock(returncode=0, stdout="", stderr="")
+        failed = mock.MagicMock(returncode=1, stdout="error LNK2019: missing symbol", stderr="")
+        with mock.patch("enm.doctor.find_visual_studio", return_value=None):
+            with mock.patch("enm.doctor.subprocess.run", side_effect=[configured, failed]) as run_mock:
+                with mock.patch("enm.doctor.os.name", "nt"):
+                    check = _deep_sdk_probe(sdk, Path("C:/sdk/lib/cmake/EuiNeo/EuiNeoConfig.cmake"), compiler)
+        self.assertEqual(check.status, "unsupported")
+        self.assertIn("build/link failed", check.detail)
+        self.assertEqual(run_mock.call_count, 2)
+
 
 class DoctorFixTests(unittest.TestCase):
     def test_detect_package_manager_finds_winget(self):
@@ -236,6 +456,18 @@ class DoctorFixTests(unittest.TestCase):
         check = Check("cmake", "missing", "not found", required=True)
         command, desc = _install_command(check, "winget")
         self.assertEqual(command, ["winget", "install", "Kitware.CMake"])
+
+    def test_install_command_eui_sdk_uses_pinned_version(self):
+        check = Check(
+            "eui-sdk",
+            "missing",
+            "EUI-NEO v0.5.2 (windows-x64) is required by the project but not installed; run 'enm sdk install v0.5.2'",
+            required=True,
+        )
+        command, desc = _install_command(check, "winget")
+        self.assertEqual(command[:5], [sys.executable, "-m", "enm", "sdk", "install"])
+        self.assertEqual(command[5], "v0.5.2")
+        self.assertIn("v0.5.2", desc)
 
     def test_install_command_vulkan_on_windows_is_manual(self):
         check = Check("vulkan", "missing", "", required=True)
@@ -310,6 +542,40 @@ class DoctorFixTests(unittest.TestCase):
         self.assertEqual(result[0].status, "fixed")
         self.assertEqual(result[1].status, "fixed")
 
+    def test_fix_suggests_switching_for_family_mismatch(self):
+        from io import StringIO
+
+        checks = [Check("toolchain", "unsupported", "project requires msvc >=19.44,<20 but current compiler is gcc", required=True)]
+        with mock.patch("sys.stdout", new=StringIO()) as output:
+            fix_missing_dependencies(checks, yes=False, force=False)
+        text = output.getvalue()
+        self.assertIn("Project requires MSVC but the active compiler is GCC", text)
+        self.assertIn("enm lock-compiler", text)
+        self.assertIn("enm configure --force", text)
+
+    def test_fix_suggests_installing_required_compiler_when_missing(self):
+        from io import StringIO
+
+        checks = [Check("toolchain", "missing", "project requires clang but no compiler was found", required=True)]
+        with mock.patch("sys.stdout", new=StringIO()) as output:
+            fix_missing_dependencies(checks, yes=False, force=False)
+        text = output.getvalue()
+        self.assertIn("Toolchain constraint requires CLANG but no matching compiler was found", text)
+        self.assertIn("winget install LLVM.LLVM", text)
+        self.assertIn("enm lock-compiler", text)
+        self.assertIn("enm configure --force", text)
+
+    def test_fix_does_not_misidentify_current_compiler_as_required(self):
+        from io import StringIO
+
+        checks = [Check("toolchain", "unsupported", "project requires clang but current compiler is msvc", required=True)]
+        with mock.patch("sys.stdout", new=StringIO()) as output:
+            fix_missing_dependencies(checks, yes=False, force=False)
+        text = output.getvalue()
+        self.assertIn("Project requires CLANG but the active compiler is MSVC", text)
+        self.assertNotIn("MSVC must be installed manually", text)
+        self.assertNotIn("Toolchain constraint requires MSVC", text)
+
 
 class DoctorCliTests(unittest.TestCase):
     def test_doctor_parser_accepts_project_and_deep(self):
@@ -332,6 +598,12 @@ class DoctorCliTests(unittest.TestCase):
         args = parser().parse_args(["doctor", "fix", "--project", ".", "--deep"])
         self.assertEqual(args.project, ".")
         self.assertTrue(args.deep)
+
+    def test_doctor_fix_parser_accepts_json_after_subcommand(self):
+        from enm.cli import parser
+
+        args = parser().parse_args(["doctor", "fix", "--json"])
+        self.assertTrue(args.json)
 
     def test_doctor_fix_rejects_yes_and_force_together(self):
         from enm.cli import cmd_doctor_fix

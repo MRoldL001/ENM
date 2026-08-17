@@ -136,7 +136,8 @@ class StateStore:
             "sha256": sha256,
             "release_url": release.page_url,
         }
-        state["active"][installed.key] = release.tag
+        if installed.key not in state["active"]:
+            state["active"][installed.key] = release.tag
         self.save(state)
         return installed
 
