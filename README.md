@@ -33,7 +33,7 @@ ENM 是一个非官方的 EUI-NEO 命令行工具。它帮你完成 SDK 下载�
 
 - 查看可用的 EUI-NEO 版本
 - 下载并切换不同版本的 SDK
-- 检查电脑是否具备构建条件
+- 检查电脑是否具备构建条件并一键修复
 - 一条命令创建新的 EUI-NEO 应用
 - 配置、构建和简单测试应用
 - 整理运行文件并生成 ZIP 或 tar.gz
@@ -46,11 +46,6 @@ ENM 是一个非官方的 EUI-NEO 命令行工具。它帮你完成 SDK 下载�
 需要提前安装：
 
 - Python 3.9 或更高版本
-- CMake 3.14 或更高版本
-- Windows：Visual Studio 2022 Build Tools，并勾选 C++ 桌面开发工具
-- 能正常访问 GitHub
-
-Vulkan SDK 不是默认必需项。普通项目默认使用 OpenGL；只有你主动选择 Vulkan 时才需要安装它。
 
 ### 安装 ENM
 
@@ -201,7 +196,7 @@ enm configure
 enm build
 ```
 
-程序通常位于：
+程序通常位于（视构建工具而定）：
 
 ```text
 my-app/build/default/Release/My_App.exe
@@ -269,7 +264,7 @@ enm package --format zip
 
 - `test`：单独构建测试程序，再通过 CTest 运行登记的测试；普通 `build` 不构建测试
 - `deploy`：把程序、资源和需要随程序提供的文件整理到 `dist/`
-- `package`：无论成功失败都会删除临时部署目录；成功时只保留压缩包与 `.sha256`，需要展开目录请使用 `deploy`
+- 
 - `package`：把整理后的目录压缩，并附带 `.sha256` 校验文件
 
 ## 🩺 关于环境检查
@@ -280,7 +275,7 @@ enm package --format zip
 enm doctor
 ```
 
-`enm doctor` 会按当前项目的实际选择做能力探测：编译器是否支持 C++17、所选后端、SDK 完整性及 Windows 上的 MSVC ABI 兼容性等。Windows 上使用 MSVC 不需要 Ninja；项目锁定 GCC 或 Clang 时，ENM 才会将 Ninja 视为必需项。
+`enm doctor` 会按当前项目的实际选择做能力探测：编译器是否支持 C++17、所选后端、SDK 完整性及 Windows 上的 MSVC ABI 兼容性等。
 
 默认情况下 `enm doctor` 不会主动测试网络连接；只有当项目开启 `EUI_DEPS_MODE=fetch`，或使用的旧版 SDK 需要在线拉取上游源码补齐入口时，才会出现 `network` 检查。
 
