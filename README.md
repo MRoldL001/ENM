@@ -215,6 +215,35 @@ ENM 会按 SDK 的实际内容选择接入方式。提供 `eui_neo_configure_app
 
 从 schema 2 开始，`enm-project.json` 支持可选的 `toolchain` 字段，用于约束编译器家族和版本范围（如 `>=19.44,<20`）。schema 1 项目仍然兼容。
 
+`enm-project.json` 示例（schema 2）：
+
+```json
+{
+  "schema": 2,
+  "name": "My App",
+  "version": "0.1.0",
+  "target": "My_App",
+  "eui": {
+    "version": "v0.5.6"
+  },
+  "build_dir": "build/default",
+  "toolchain": {
+    "compiler": "msvc",
+    "version": ">=19.44,<20"
+  }
+}
+```
+
+字段说明：
+
+- `schema`：配置文件版本，当前为 `2`。
+- `name`：应用名称。
+- `version`：项目自身的版本号。
+- `target`：CMake 目标名，通常由 `enm init` 根据 `name` 自动生成。
+- `eui.version`：项目固定使用的 EUI-NEO SDK 版本。
+- `build_dir`：构建输出目录。
+- `toolchain`：可选，约束编译器家族和版本。`compiler` 支持 `msvc`、`gcc`、`clang`；`version` 支持 `=`、`>=`、`<=`、`<`、`>` 及范围组合。
+
 项目使用 EUI-NEO 官方外部应用接口，并将源码单独放在 `src/`：
 
 ```text
@@ -252,6 +281,8 @@ enm doctor
 ```
 
 `enm doctor` 会按当前项目的实际选择做能力探测：编译器是否支持 C++17、所选后端、SDK 完整性及 Windows 上的 MSVC ABI 兼容性等。Windows 上使用 MSVC 不需要 Ninja；项目锁定 GCC 或 Clang 时，ENM 才会将 Ninja 视为必需项。
+
+默认情况下 `enm doctor` 不会主动测试网络连接；只有当项目开启 `EUI_DEPS_MODE=fetch`，或使用的旧版 SDK 需要在线拉取上游源码补齐入口时，才会出现 `network` 检查。
 
 常用形式：
 
@@ -309,17 +340,17 @@ enm init "My App" --path my-app --ci github `
 
 ### `enm doctor` — 环境检查
 
-| 参数/子命令               | 说明                                                                  |
-| -------------------- | ------------------------------------------------------------------- |
-| `--project <路径>`     | 指定项目目录，根据 `enm-project.json` 推断窗口/渲染后端依赖                            |
-| `--deep`             | 额外配置并链接一个最小应用，验证当前 SDK 与本机工具链是否兼容；与 `--project` 一起使用时会按项目锁定的工具链进行探测 |
-| `--json`             | 以 JSON 格式输出检查结果                                                     |
-| `fix`                | 进入依赖补全模式                                                            |
-| `fix --yes`          | 自动确认安装必需依赖；不能与 `--force` 同时使用                                       |
-| `fix --force`        | 同时询问安装可选依赖；不能与 `--yes` 同时使用                                         |
-| `fix --project <路径>` | 与 `doctor --project` 相同，用于 fix 模式                                   |
-| `fix --deep`         | 与 `doctor --deep` 相同，用于 fix 模式                                      |
-| `fix --json --yes`   | 非交互修复后输出 JSON；JSON 模式必须同时指定 `--yes`                                 |
+| 参数/子命令               | 说明                                                   |
+| -------------------- | ---------------------------------------------------- |
+| `--project <路径>`     | 指定项目目录，根据 `enm-project.json` 推断后端依赖，并只显示项目相关检查项      |
+| `--deep`             | 配置并链接最小应用，验证 SDK 与工具链兼容性；配合 `--project` 时使用项目锁定的工具链  |
+| `--json`             | 以 JSON 格式输出检查结果                                      |
+| `fix`                | 进入依赖补全模式                                             |
+| `fix --yes`          | 自动确认安装必需依赖；不能与 `--force` 同时使用                        |
+| `fix --force`        | 同时询问安装可选依赖；不能与 `--yes` 同时使用                          |
+| `fix --project <路径>` | 与 `doctor --project` 相同，用于 fix 模式                    |
+| `fix --deep`         | 与 `doctor --deep` 相同，用于 fix 模式                       |
+| `fix --json --yes`   | 自动修复后以纯 JSON 输出结果；`--json` 必须与 `--yes` 同时使用，否则直接拒绝执行 |
 
 ### `enm sdk` — SDK 管理
 
