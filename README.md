@@ -264,7 +264,6 @@ enm package --format zip
 
 - `test`：单独构建测试程序，再通过 CTest 运行登记的测试；普通 `build` 不构建测试
 - `deploy`：把程序、资源和需要随程序提供的文件整理到 `dist/`
-- 
 - `package`：把整理后的目录压缩，并附带 `.sha256` 校验文件
 
 ## 🩺 关于环境检查
