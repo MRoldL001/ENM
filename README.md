@@ -5,7 +5,7 @@
 <br/>
 
 <div align="center">
-  <strong>ENM - 更轻松地安装 EUI-NEO SDK、创建应用并打包</strong>
+  <strong>ENM - 更轻松地安装 EUI-NEO SDK、检查环境、创建应用并打包</strong>
 </div>
 
 <br/>
@@ -19,7 +19,6 @@
   <img src="https://img.shields.io/badge/ENM-0.3.0-2F80ED?style=flat-square" alt="ENM 0.3.0">
   <img src="https://img.shields.io/badge/Python-%E2%89%A53.9-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.9+">
   <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT License">
-  <img src="https://img.shields.io/badge/Status-Experimental-orange?style=flat-square" alt="Experimental">
 </div>
 
 ---
